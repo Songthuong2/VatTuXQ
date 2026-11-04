@@ -531,7 +531,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className={`min-h-screen flex ${darkMode ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+      <div className={`h-screen overflow-hidden flex ${darkMode ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       <Toaster position="top-right" richColors />
       
       {/* Mobile Sidebar Overlay */}
@@ -544,9 +544,9 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 w-64 border-r transform transition-transform duration-300 ease-in-out
+        fixed inset-y-0 left-0 z-50 w-64 h-screen shrink-0 border-r transform transition-transform duration-300 ease-in-out
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-        lg:translate-x-0 lg:static lg:inset-0
+        lg:translate-x-0 lg:sticky lg:top-0
         ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}
       `}>
         <div className="h-full flex flex-col overflow-hidden">
@@ -624,7 +624,7 @@ export default function App() {
             />
             <NavItem 
               icon={<Users className="text-indigo-500" />} 
-              label="Người dùng & Cán bộ" 
+              label="Người dùng" 
               active={activeTab === 'users'} 
               onClick={() => {setActiveTab('users'); setSidebarOpen(false);}} 
               darkMode={darkMode}
@@ -664,9 +664,9 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* Header */}
-        <header className={`h-16 border-b flex items-center justify-between px-4 lg:px-8 sticky top-0 z-40 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-4 lg:px-8 sticky top-0 z-40 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
           <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
             <Menu className="w-6 h-6" />
           </button>
