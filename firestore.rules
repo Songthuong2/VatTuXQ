@@ -1,0 +1,168 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      // Hardcoded admin for bootstrap as requested in instructions
+      return isSignedIn() && request.auth.token.email == 'manhha2@gmail.com' && isEmailVerified();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['name']) 
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
+        && (!('description' in data) || (data.description is string && data.description.size() <= 500))
+        && (!('status' in data) || (data.status is string && data.status.size() <= 50));
+    }
+
+    function isValidDepartment(data) {
+      return data.keys().hasAll(['name'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
+        && (!('deviceType' in data) || (data.deviceType is string && data.deviceType.size() <= 100))
+        && (!('manager' in data) || (data.manager is string && data.manager.size() <= 100))
+        && (!('location' in data) || (data.location is string && data.location.size() <= 200))
+        && (!('note' in data) || (data.note is string && data.note.size() <= 500));
+    }
+
+    function isValidItem(data) {
+      return data.keys().hasAll(['name', 'categoryId', 'unit', 'minStock', 'currentStock'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 200
+        && data.categoryId is string && isValidId(data.categoryId)
+        && data.unit is string && data.unit.size() > 0 && data.unit.size() <= 50
+        && data.minStock is number && data.minStock >= 0
+        && data.currentStock is number
+        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
+        && (!('specification' in data) || (data.specification is string && data.specification.size() <= 200))
+        && (!('manufacturer' in data) || (data.manufacturer is string && data.manufacturer.size() <= 200))
+        && (!('departmentId' in data) || (data.departmentId is string && (data.departmentId == '' || isValidId(data.departmentId))))
+        && (!('expiryDate' in data) || (data.expiryDate is string && (data.expiryDate == '' || data.expiryDate.matches('^\\d{4}-\\d{2}-\\d{2}$'))))
+        && (!('price' in data) || (data.price is number && data.price >= 0))
+        && (!('note' in data) || (data.note is string && data.note.size() <= 500))
+        && (!('createdAt' in data) || (data.createdAt == request.time || data.createdAt == null));
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['itemId', 'type', 'quantity', 'timestamp'])
+        && data.itemId is string && isValidId(data.itemId)
+        && data.type in ['IN', 'OUT', 'TRANSFER', 'AUDIT']
+        && data.quantity is number && data.quantity != 0
+        && data.timestamp == request.time
+        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
+        && (!('fromDeptId' in data) || (data.fromDeptId is string && (data.fromDeptId == '' || isValidId(data.fromDeptId))))
+        && (!('toDeptId' in data) || (data.toDeptId is string && (data.toDeptId == '' || isValidId(data.toDeptId))))
+        && (!('unitPrice' in data) || (data.unitPrice is number && data.unitPrice >= 0))
+        && (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0))
+        && (!('batchNumber' in data) || (data.batchNumber is string && data.batchNumber.size() <= 100))
+        && (!('batchExpiry' in data) || (data.batchExpiry is string && data.batchExpiry.size() <= 50))
+        && (!('performer' in data) || (data.performer is string && data.performer.size() <= 100))
+        && (!('note' in data) || (data.note is string && data.note.size() <= 500));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['name', 'email', 'role'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.email is string && data.email.size() > 0 && data.email.size() <= 150
+        && data.role is string && data.role in ['Admin', 'ThuKho', 'KyThuatVien', 'BacSi', 'Xem']
+        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 50))
+        && (!('departmentId' in data) || (data.departmentId is string && (data.departmentId == '' || isValidId(data.departmentId))))
+        && (!('status' in data) || (data.status is string && data.status.size() <= 50))
+        && (!('createdAt' in data) || (data.createdAt == request.time || data.createdAt == null));
+    }
+
+    function isValidHoliday(data) {
+      return data.keys().hasAll(['date'])
+        && data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && (!('note' in data) || (data.note is string && data.note.size() <= 200));
+    }
+
+    // --- Collection Matches ---
+
+    match /categories/{categoryId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidCategory(incoming()) && isValidId(categoryId);
+      allow update: if isSignedIn() && isValidCategory(incoming()) 
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'description', 'status']);
+      allow delete: if isAdmin();
+    }
+
+    match /departments/{departmentId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidDepartment(incoming()) && isValidId(departmentId);
+      allow update: if isSignedIn() && isValidDepartment(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'deviceType', 'manager', 'location', 'note']);
+      allow delete: if isAdmin();
+    }
+
+    match /items/{itemId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidItem(incoming()) && isValidId(itemId);
+      allow update: if isSignedIn() && isValidItem(incoming()) && (
+        // Action: Stock update (only currentStock changes)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['currentStock'])) ||
+        // Action: Meta update (other fields change, but currentStock MUST stay same or we'd need a transaction)
+        (incoming().diff(existing()).affectedKeys().hasAny(['name', 'code', 'specification', 'manufacturer', 'categoryId', 'unit', 'minStock', 'price', 'expiryDate', 'departmentId', 'note']) && !incoming().diff(existing()).affectedKeys().hasAny(['currentStock'])) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidTransaction(incoming()) && isValidId(transactionId);
+      allow update: if false; // Transactions should be immutable
+      allow delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidUser(incoming()) && isValidId(userId);
+      allow update: if isSignedIn() && isValidUser(incoming()) && (
+        isAdmin() || (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'departmentId']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /holidays/{holidayId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidHoliday(incoming()) && isValidId(holidayId);
+      allow update: if isSignedIn() && isValidHoliday(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'note']);
+      allow delete: if isAdmin();
+    }
+  }
+}

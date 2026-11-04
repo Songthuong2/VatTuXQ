@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trang Chủ - Quản Lý Vật Tư Chẩn Đoán Hình Ảnh</title>
+  <meta name="description" content="Trang chủ Hệ thống Quản lý Kho Vật tư Y tế Khoa Chẩn đoán Hình ảnh: Theo dõi tồn kho, cảnh báo sắp hết và điều chuyển vật tư.">
+  
+  <!-- Tailwind CSS CDN for instant beautiful modern styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <style>
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen flex flex-col">
+
+  <!-- ========================================================================= -->
+  <!-- 1. THANH ĐIỀU HƯỚNG (NAVIGATION BAR)                                      -->
+  <!-- Bao gồm các liên kết đến: 'Quản lý Vật tư', 'Báo cáo', 'Nhập/Xuất Tồn'    -->
+  <!-- ========================================================================= -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        
+        <!-- Logo & Tên Khoa -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+            </svg>
+          </div>
+          <div>
+            <h1 class="text-base font-bold text-slate-900 leading-tight">Vật Tư CĐHA</h1>
+            <p class="text-xs text-slate-500 font-medium">Khoa Chẩn Đoán Hình Ảnh</p>
+          </div>
+        </div>
+
+        <!-- Các liên kết điều hướng chính -->
+        <nav class="hidden md:flex items-center space-x-1 lg:space-x-2">
+          <!-- Liên kết Trang chủ (Active) -->
+          <a href="#trang-chu" class="px-3 py-2 rounded-lg text-sm font-semibold text-blue-600 bg-blue-50 flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+            </svg>
+            <span>Trang Chủ</span>
+          </a>
+
+          <!-- Liên kết 1: Quản lý Vật tư -->
+          <a href="#quan-ly-vat-tu" class="px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:text-blue-600 hover:bg-slate-50 transition-colors flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+            </svg>
+            <span>Quản lý Vật tư</span>
+          </a>
+
+          <!-- Liên kết 2: Nhập/Xuất Tồn -->
+          <a href="#nhap-xuat-ton" class="px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:text-blue-600 hover:bg-slate-50 transition-colors flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+            </svg>
+            <span>Nhập/Xuất Tồn</span>
+          </a>
+
+          <!-- Liên kết 3: Báo cáo -->
+          <a href="#bao-cao" class="px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:text-blue-600 hover:bg-slate-50 transition-colors flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span>Báo cáo</span>
+          </a>
+        </nav>
+
+        <!-- Ô tìm kiếm nhanh & Thông tin cán bộ trực -->
+        <div class="flex items-center gap-3">
+          <div class="relative hidden sm:block">
+            <input 
+              type="text" 
+              placeholder="Tìm kiếm vật tư, thuốc, hóa chất..." 
+              class="w-56 lg:w-64 pl-9 pr-4 py-1.5 rounded-lg text-xs bg-slate-100 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+            >
+            <svg class="w-4 h-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+
+          <!-- Nút chuông thông báo có cảnh báo vật tư sắp hết -->
+          <button class="relative p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors" title="Cảnh báo tồn kho">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+          </button>
+
+          <!-- Avatar Cán bộ quản lý kho -->
+          <div class="flex items-center gap-2 pl-2 border-l border-slate-200">
+            <div class="w-8 h-8 rounded-full bg-blue-100 border border-blue-300 text-blue-700 font-bold text-xs flex items-center justify-center">
+              HA
+            </div>
+            <div class="hidden xl:block text-left">
+              <p class="text-xs font-bold text-slate-800 leading-tight">DS. Nguyễn Hà</p>
+              <p class="text-[10px] text-slate-400">Thủ kho CĐHA</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </header>
+
+  <!-- ========================================================================= -->
+  <!-- NỘI DUNG CHÍNH (MAIN CONTAINER)                                           -->
+  <!-- ========================================================================= -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+    <!-- Lời chào & Tiêu đề Trang chủ -->
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-900 rounded-3xl p-6 sm:p-8 text-white shadow-xl shadow-blue-900/10">
+      <div>
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/15 text-blue-100 mb-3 backdrop-blur-sm border border-white/10">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          Kho Trung Tâm Khoa Chẩn Đoán Hình Ảnh
+        </span>
+        <h2 class="text-2xl sm:text-3xl font-extrabold tracking-tight">Tổng Quan Vật Tư Y Tế & Tiêu Hao</h2>
+        <p class="mt-2 text-sm text-blue-100 max-w-2xl leading-relaxed">
+          Giám sát trực quan lượng tồn kho, cảnh báo thiếu hụt vật tư X-quang, CT, MRI, Siêu âm và tự động đồng bộ xuất nhập cho toàn bộ các phòng chụp.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 shrink-0">
+        <a href="#nhap-xuat-ton" class="px-5 py-2.5 rounded-xl bg-white text-blue-700 hover:bg-blue-50 font-bold text-xs shadow-md transition-all flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          Tạo Phiếu Nhập / Xuất
+        </a>
+        <a href="#bao-cao" class="px-4 py-2.5 rounded-xl bg-blue-800/80 hover:bg-blue-800 text-white font-semibold text-xs border border-white/20 transition-all flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          Xuất Báo Cáo
+        </a>
+      </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 2. KHU VỰC HIỂN THỊ THÔNG TIN TỔNG QUAN                                    -->
+    <!-- (Tổng vật tư, Số lượng vật tư sắp hết, Cận hạn, Tổng giá trị, Xuất/Nhập)    -->
+    <!-- ========================================================================= -->
+    <section aria-labelledby="overview-heading" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 id="overview-heading" class="text-lg font-bold text-slate-900 flex items-center gap-2">
+          <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          Chỉ Số Tồn Kho Tổng Quan
+        </h3>
+        <span class="text-xs text-slate-500">Cập nhật lúc: 09:30 hôm nay</span>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        
+        <!-- Thẻ 1: Tổng số mặt hàng vật tư -->
+        <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Tổng Danh Mục Vật Tư</p>
+            <div class="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+            </div>
+          </div>
+          <div class="mt-4 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-slate-900">128</span>
+            <span class="text-xs text-slate-500 font-medium">mặt hàng y tế</span>
+          </div>
+          <p class="mt-2 text-xs text-emerald-600 font-medium flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+            </svg>
+            <span>Phục vụ 7 phòng máy CĐHA</span>
+          </p>
+        </div>
+
+        <!-- Thẻ 2: CẢNH BÁO: SỐ LƯỢNG VẬT TƯ SẮP HẾT (Yêu cầu trọng tâm) -->
+        <div class="bg-gradient-to-br from-amber-50 to-orange-50/70 p-5 rounded-2xl border-2 border-amber-300/80 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1.5">
+              <span class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping"></span>
+              <p class="text-xs font-bold uppercase tracking-wider text-amber-900">Vật Tư Sắp Hết Hàng</p>
+            </div>
+            <div class="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+          </div>
+          <div class="mt-4 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-amber-700">06</span>
+            <span class="text-xs font-bold text-amber-800">mặt hàng dưới mức tối thiểu</span>
+          </div>
+          <a href="#danh-sach-canh-bao" class="mt-2 text-xs font-bold text-amber-800 hover:text-amber-900 underline flex items-center gap-1">
+            <span>Xem danh sách cần dự trù khẩn cấp</span>
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+          </a>
+        </div>
+
+        <!-- Thẻ 3: Vật tư cận hạn sử dụng (<90 ngày) -->
+        <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Cận Hạn Sử Dụng</p>
+            <div class="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </div>
+          </div>
+          <div class="mt-4 flex items-baseline gap-2">
+            <span class="text-3xl font-extrabold text-slate-900">03</span>
+            <span class="text-xs text-rose-600 font-semibold">lô hàng dưới 90 ngày</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-500">Thuốc cản quang & Gel siêu âm</p>
+        </div>
+
+        <!-- Thẻ 4: Tổng giá trị tồn kho -->
+        <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Tổng Giá Trị Tồn Kho</p>
+            <div class="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+          </div>
+          <div class="mt-4 flex items-baseline gap-1">
+            <span class="text-2xl font-extrabold text-slate-900">485.620.000</span>
+            <span class="text-xs text-slate-500 font-semibold">VNĐ</span>
+          </div>
+          <p class="mt-2 text-xs text-slate-500 font-medium">Bao gồm vật tư can thiệp DSA & CT</p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- 3. CÁC NÚT HOẶC LIÊN KẾT NHANH ĐỂ THỰC HIỆN CÁC TÁC VỤ PHỔ BIẾN            -->
+    <!-- (Nhập kho, Xuất phòng máy, Tra cứu, Báo cáo, Kiểm kê, Đồng bộ Sheets)     -->
+    <!-- ========================================================================= -->
+    <section aria-labelledby="quick-actions-heading" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 id="quick-actions-heading" class="text-lg font-bold text-slate-900 flex items-center gap-2">
+          <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          Thao Tác Nhanh & Tác Vụ Phổ Biến
+        </h3>
+        <span class="text-xs text-slate-500 font-medium">Lối tắt thao tác 1 chạm</span>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+        
+        <!-- Tác vụ 1: Nhập kho mới -->
+        <a href="#nhap-kho" class="group p-4 bg-white rounded-2xl border border-slate-200 hover:border-blue-500 hover:shadow-md transition-all text-center flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors flex items-center justify-center mb-2.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+          </div>
+          <span class="text-xs font-bold text-slate-800 group-hover:text-blue-600">Nhập Kho Mới</span>
+          <span class="text-[10px] text-slate-400 mt-0.5">Tiếp nhận từ NCC</span>
+        </a>
+
+        <!-- Tác vụ 2: Xuất kho phòng máy -->
+        <a href="#xuat-phong-may" class="group p-4 bg-white rounded-2xl border border-slate-200 hover:border-emerald-500 hover:shadow-md transition-all text-center flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white transition-colors flex items-center justify-center mb-2.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+          </div>
+          <span class="text-xs font-bold text-slate-800 group-hover:text-emerald-600">Xuất Phòng Máy</span>
+          <span class="text-[10px] text-slate-400 mt-0.5">X-quang, CT, MRI, SA</span>
+        </a>
+
+        <!-- Tác vụ 3: Xem vật tư sắp hết -->
+        <a href="#danh-sach-canh-bao" class="group p-4 bg-white rounded-2xl border border-slate-200 hover:border-amber-500 hover:shadow-md transition-all text-center flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 group-hover:bg-amber-600 group-hover:text-white transition-colors flex items-center justify-center mb-2.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <span class="text-xs font-bold text-slate-800 group-hover:text-amber-600">Vật Tư Sắp Hết</span>
+          <span class="text-[10px] text-amber-600 font-semibold mt-0.5">6 mục cần bù</span>
+        </a>
+
+        <!-- Tác vụ 4: Kiểm kê kho định kỳ -->
+        <a href="#kiem-ke" class="group p-4 bg-white rounded-2xl border border-slate-200 hover:border-purple-500 hover:shadow-md transition-all text-center flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition-colors flex items-center justify-center mb-2.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+          </div>
+          <span class="text-xs font-bold text-slate-800 group-hover:text-purple-600">Kiểm Kê Kho</span>
+          <span class="text-[10px] text-slate-400 mt-0.5">Đối chiếu thực tế</span>
+        </a>
+
+        <!-- Tác vụ 5: Lập Báo cáo xuất nhập -->
+        <a href="#bao-cao" class="group p-4 bg-white rounded-2xl border border-slate-200 hover:border-indigo-500 hover:shadow-md transition-all text-center flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors flex items-center justify-center mb-2.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <span class="text-xs font-bold text-slate-800 group-hover:text-indigo-600">Lập Báo Cáo</span>
+          <span class="text-[10px] text-slate-400 mt-0.5">Thống kê kỳ/tháng</span>
+        </a>
+
+        <!-- Tác vụ 6: Đồng bộ Google Sheets -->
+        <a href="#google-sheets" class="group p-4 bg-white rounded-2xl border border-slate-200 hover:border-emerald-500 hover:shadow-md transition-all text-center flex flex-col items-center justify-center">
+          <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white transition-colors flex items-center justify-center mb-2.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 4h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <span class="text-xs font-bold text-slate-800 group-hover:text-emerald-600">Google Sheets</span>
+          <span class="text-[10px] text-slate-400 mt-0.5">5 sheet mẫu chuẩn</span>
+        </a>
+
+      </div>
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- BẢNG CHI TIẾT: DANH SÁCH VẬT TƯ SẮP HẾT CẦN BỔ SUNG NGAY                  -->
+    <!-- ========================================================================= -->
+    <section id="danh-sach-canh-bao" class="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
+      <div class="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/60">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="p-1.5 rounded-lg bg-amber-100 text-amber-700">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </span>
+            <h4 class="text-sm font-bold text-slate-900">Danh Sách Vật Tư Sắp Hết Cần Bổ Sung Ngay</h4>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">Các mặt hàng có số lượng tồn kho thực tế nhỏ hơn hoặc bằng ngưỡng an toàn</p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 shadow-sm">
+            Tải danh sách Excel
+          </button>
+          <button class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-sm flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Tạo dự trù vật tư
+          </button>
+        </div>
+      </div>
+
+      <!-- Bảng dữ liệu -->
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs border-collapse">
+          <thead>
+            <tr class="bg-slate-50 text-slate-500 border-b border-slate-200">
+              <th class="py-3 px-4 font-semibold">Mã Vật Tư</th>
+              <th class="py-3 px-4 font-semibold">Tên Vật Tư & Quy Cách</th>
+              <th class="py-3 px-4 font-semibold">Phòng Máy Sử Dụng</th>
+              <th class="py-3 px-4 font-semibold text-center">Đơn Vị</th>
+              <th class="py-3 px-4 font-semibold text-right">Tồn Hiện Tại</th>
+              <th class="py-3 px-4 font-semibold text-right">Tồn Tối Thiểu</th>
+              <th class="py-3 px-4 font-semibold text-center">Tình Trạng</th>
+              <th class="py-3 px-4 font-semibold text-right">Thao Tác</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 text-slate-700">
+            
+            <tr class="hover:bg-slate-50/80 transition-colors">
+              <td class="py-3.5 px-4 font-mono font-medium text-blue-600">VT-CT-001</td>
+              <td class="py-3.5 px-4">
+                <div class="font-bold text-slate-900">Thuốc cản quang Ultravist 370mgI/ml</div>
+                <div class="text-[11px] text-slate-400">Chai 100ml - Bayer Đức</div>
+              </td>
+              <td class="py-3.5 px-4">
+                <span class="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-medium">Phòng CT-Scanner 128</span>
+              </td>
+              <td class="py-3.5 px-4 text-center">Chai</td>
+              <td class="py-3.5 px-4 text-right font-bold text-red-600">8</td>
+              <td class="py-3.5 px-4 text-right font-medium text-slate-500">20</td>
+              <td class="py-3.5 px-4 text-center">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700">Thiếu 12 chai</span>
+              </td>
+              <td class="py-3.5 px-4 text-right">
+                <button class="px-2.5 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white font-semibold transition-colors">
+                  Nhập bù
+                </button>
+              </td>
+            </tr>
+
+            <tr class="hover:bg-slate-50/80 transition-colors">
+              <td class="py-3.5 px-4 font-mono font-medium text-blue-600">VT-XQ-002</td>
+              <td class="py-3.5 px-4">
+                <div class="font-bold text-slate-900">Phim X-quang Laser Kỹ Thuật Số (DryView)</div>
+                <div class="text-[11px] text-slate-400">Kích thước 35x43cm (14x17 inch) - Hộp 125 tờ</div>
+              </td>
+              <td class="py-3.5 px-4">
+                <span class="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-medium">Phòng X-quang KTS 01</span>
+              </td>
+              <td class="py-3.5 px-4 text-center">Hộp</td>
+              <td class="py-3.5 px-4 text-right font-bold text-red-600">2</td>
+              <td class="py-3.5 px-4 text-right font-medium text-slate-500">6</td>
+              <td class="py-3.5 px-4 text-center">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700">Thiếu 4 hộp</span>
+              </td>
+              <td class="py-3.5 px-4 text-right">
+                <button class="px-2.5 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white font-semibold transition-colors">
+                  Nhập bù
+                </button>
+              </td>
+            </tr>
+
+            <tr class="hover:bg-slate-50/80 transition-colors">
+              <td class="py-3.5 px-4 font-mono font-medium text-blue-600">VT-KT-003</td>
+              <td class="py-3.5 px-4">
+                <div class="font-bold text-slate-900">Kim luồn tĩnh mạch chịu áp lực cao 20G</div>
+                <div class="text-[11px] text-slate-400">Chuyên dụng tiêm máy CT/MRI - Hộp 50 cái</div>
+              </td>
+              <td class="py-3.5 px-4">
+                <span class="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-medium">Kho Tổng CĐHA</span>
+              </td>
+              <td class="py-3.5 px-4 text-center">Cái</td>
+              <td class="py-3.5 px-4 text-right font-bold text-amber-600">15</td>
+              <td class="py-3.5 px-4 text-right font-medium text-slate-500">40</td>
+              <td class="py-3.5 px-4 text-center">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">Thiếu 25 cái</span>
+              </td>
+              <td class="py-3.5 px-4 text-right">
+                <button class="px-2.5 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white font-semibold transition-colors">
+                  Nhập bù
+                </button>
+              </td>
+            </tr>
+
+            <tr class="hover:bg-slate-50/80 transition-colors">
+              <td class="py-3.5 px-4 font-mono font-medium text-blue-600">VT-SA-004</td>
+              <td class="py-3.5 px-4">
+                <div class="font-bold text-slate-900">Gel siêu âm y tế vô trùng tiệt trùng</div>
+                <div class="text-[11px] text-slate-400">Can 5 Lít kèm bình chiết 250ml</div>
+              </td>
+              <td class="py-3.5 px-4">
+                <span class="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-medium">Phòng Siêu Âm Doppler</span>
+              </td>
+              <td class="py-3.5 px-4 text-center">Can</td>
+              <td class="py-3.5 px-4 text-right font-bold text-amber-600">3</td>
+              <td class="py-3.5 px-4 text-right font-medium text-slate-500">8</td>
+              <td class="py-3.5 px-4 text-center">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">Thiếu 5 can</span>
+              </td>
+              <td class="py-3.5 px-4 text-right">
+                <button class="px-2.5 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white font-semibold transition-colors">
+                  Nhập bù
+                </button>
+              </td>
+            </tr>
+
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ========================================================================= -->
+  <!-- FOOTER                                                                    -->
+  <!-- ========================================================================= -->
+  <footer class="bg-white border-t border-slate-200 mt-12 py-6 text-center text-xs text-slate-500">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <p>© 2026 Hệ Thống Quản Lý Vật Tư Khoa Chẩn Đoán Hình Ảnh. Chuẩn hóa quy trình quản lý y tế.</p>
+      <div class="flex items-center gap-4 text-slate-400">
+        <span>Phiên bản v2.5</span>
+        <span>•</span>
+        <span>Kho Dược & Vật tư Tiêu hao</span>
+        <span>•</span>
+        <span class="text-blue-600 font-medium">Đã kết nối cơ sở dữ liệu</span>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

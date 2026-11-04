@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      // Hardcoded admin for bootstrap as requested in instructions
+      return isSignedIn() && request.auth.token.email == 'manhha2@gmail.com' && isEmailVerified();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['name']) 
+        && data.keys().size() == 1
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100;
+    }
+
+    function isValidDepartment(data) {
+      return data.keys().hasAll(['name'])
+        && data.keys().size() == 1
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100;
+    }
+
+    function isValidItem(data) {
+      return data.keys().hasAll(['name', 'categoryId', 'unit', 'minStock', 'currentStock'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 200
+        && data.categoryId is string && isValidId(data.categoryId)
+        && data.unit is string && data.unit.size() > 0 && data.unit.size() <= 20
+        && data.minStock is number && data.minStock >= 0
+        && data.currentStock is number
+        && (!('departmentId' in data) || (data.departmentId is string && isValidId(data.departmentId)))
+        && (!('expiryDate' in data) || (data.expiryDate is string && data.expiryDate.matches('^\\d{4}-\\d{2}-\\d{2}$')))
+        && (!('price' in data) || (data.price is number && data.price >= 0))
+        && (!('createdAt' in data) || (data.createdAt == request.time || data.createdAt == null));
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['itemId', 'type', 'quantity', 'timestamp'])
+        && data.itemId is string && isValidId(data.itemId)
+        && data.type in ['IN', 'OUT', 'TRANSFER']
+        && data.quantity is number && data.quantity != 0
+        && data.timestamp == request.time
+        && (!('fromDeptId' in data) || (data.fromDeptId is string && isValidId(data.fromDeptId)))
+        && (!('toDeptId' in data) || (data.toDeptId is string && isValidId(data.toDeptId)))
+        && (!('note' in data) || (data.note is string && data.note.size() <= 500));
+    }
+
+    function isValidHoliday(data) {
+      return data.keys().hasAll(['date'])
+        && data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && (!('note' in data) || (data.note is string && data.note.size() <= 200));
+    }
+
+    // --- Collection Matches ---
+
+    match /categories/{categoryId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidCategory(incoming()) && isValidId(categoryId);
+      allow update: if isSignedIn() && isValidCategory(incoming()) 
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name']);
+      allow delete: if isAdmin();
+    }
+
+    match /departments/{departmentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidDepartment(incoming()) && isValidId(departmentId);
+      allow update: if isSignedIn() && isValidDepartment(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name']);
+      allow delete: if isAdmin();
+    }
+
+    match /items/{itemId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidItem(incoming()) && isValidId(itemId);
+      allow update: if isSignedIn() && (
+        // Action: Meta update (name, price, etc.)
+        (isValidItem(incoming()) && incoming().diff(existing()).affectedKeys().hasAll(['currentStock']) == false) ||
+        // Action: Stock update (from transaction)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['currentStock']) && incoming().currentStock is number)
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidTransaction(incoming()) && isValidId(transactionId);
+      allow update: if false; // Transactions should be immutable
+      allow delete: if isAdmin();
+    }
+
+    match /holidays/{holidayId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidHoliday(incoming()) && isValidId(holidayId);
+      allow update: if isSignedIn() && isValidHoliday(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'note']);
+      allow delete: if isAdmin();
+    }
+  }
+}

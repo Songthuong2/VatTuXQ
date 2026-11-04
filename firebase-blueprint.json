@@ -1,0 +1,124 @@
+{
+  "entities": {
+    "Category": {
+      "title": "Category",
+      "description": "Category for inventory items (DanhMuc_VatTu)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "TenNhom - Name of the category" },
+        "code": { "type": "string", "description": "MaNhom - Code of category e.g. NHOM_XQ" },
+        "description": { "type": "string", "description": "MoTa - Description of category" },
+        "status": { "type": "string", "description": "TrangThai - Status: Active or Inactive" }
+      },
+      "required": ["name"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Department or modality room in Diagnostic Imaging (PhongBan)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "TenPhongBan - Name of the department" },
+        "code": { "type": "string", "description": "MaPhongBan - Department code e.g. PB_XQ01, PB_CT01" },
+        "deviceType": { "type": "string", "description": "LoaiThietBi - Equipment modality: X-quang, CT, MRI, Sieu am, DSA" },
+        "manager": { "type": "string", "description": "NguoiPhuTrach - Person in charge" },
+        "location": { "type": "string", "description": "ViTri - Location in hospital" },
+        "note": { "type": "string", "description": "GhiChu - Notes" }
+      },
+      "required": ["name"]
+    },
+    "Item": {
+      "title": "Item",
+      "description": "An inventory item for diagnostic imaging (DanhSach_VatTu)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "TenVatTu - Name of the item" },
+        "code": { "type": "string", "description": "MaVatTu - Item code e.g. VT-XQ-01" },
+        "categoryId": { "type": "string", "description": "MaNhom - ID of category" },
+        "departmentId": { "type": "string", "description": "MaPhongBan - ID of department" },
+        "unit": { "type": "string", "description": "DonViTinh - Unit of measurement" },
+        "specification": { "type": "string", "description": "QuyCach - Packaging specification" },
+        "manufacturer": { "type": "string", "description": "HangSanXuat - Manufacturer / Origin" },
+        "minStock": { "type": "number", "description": "TonToiThieu - Minimum safety stock level" },
+        "currentStock": { "type": "number", "description": "TonHienTai - Current stock quantity" },
+        "expiryDate": { "type": "string", "format": "date", "description": "HanSuDung - Expiry date (YYYY-MM-DD)" },
+        "price": { "type": "number", "description": "DonGia - Unit price" },
+        "note": { "type": "string", "description": "GhiChu - Notes and storage instructions" },
+        "createdAt": { "type": "object", "description": "Timestamp when the item was created" }
+      },
+      "required": ["name", "categoryId", "unit", "minStock", "currentStock"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Inventory ledger transaction (LichSu_XuatNhap)",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "MaPhieu - Voucher code e.g. PN20260901-001" },
+        "itemId": { "type": "string", "description": "MaVatTu - ID of item" },
+        "type": { "type": "string", "enum": ["IN", "OUT", "TRANSFER", "AUDIT"], "description": "LoaiGiaoDich - IN, OUT, TRANSFER, AUDIT" },
+        "fromDeptId": { "type": "string", "description": "TuPhongBan - Source department ID" },
+        "toDeptId": { "type": "string", "description": "DenPhongBan - Target department ID" },
+        "quantity": { "type": "number", "description": "SoLuong - Quantity moved" },
+        "unitPrice": { "type": "number", "description": "DonGia - Price per unit" },
+        "totalAmount": { "type": "number", "description": "ThanhTien - Total cost" },
+        "batchNumber": { "type": "string", "description": "SoLo - Batch / Lot number" },
+        "batchExpiry": { "type": "string", "description": "HanDung - Expiry date of batch" },
+        "performer": { "type": "string", "description": "NguoiThucHien - Staff performing transaction" },
+        "timestamp": { "type": "object", "description": "NgayThucHien - Transaction timestamp" },
+        "note": { "type": "string", "description": "LyDo_GhiChu - Optional note / reason" }
+      },
+      "required": ["itemId", "type", "quantity", "timestamp"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User account and permission (NguoiDung)",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "MaNguoiDung - Staff ID" },
+        "name": { "type": "string", "description": "HoTen - Full name" },
+        "email": { "type": "string", "description": "Email address" },
+        "phone": { "type": "string", "description": "SoDienThoai - Phone number" },
+        "role": { "type": "string", "enum": ["Admin", "ThuKho", "KyThuatVien", "BacSi", "Xem"], "description": "VaiTro - User role" },
+        "departmentId": { "type": "string", "description": "PhongBanId - Department assigned" },
+        "status": { "type": "string", "description": "TrangThai - Active or Inactive" },
+        "createdAt": { "type": "object", "description": "Creation timestamp" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "Holiday": {
+      "title": "Holiday",
+      "description": "Hospital holiday date",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date", "description": "Holiday date (YYYY-MM-DD)" },
+        "note": { "type": "string", "description": "Optional note" }
+      },
+      "required": ["date"]
+    }
+  },
+  "firestore": {
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Collection of item categories (DanhMuc_VatTu)"
+    },
+    "/departments/{departmentId}": {
+      "schema": "Department",
+      "description": "Collection of diagnostic imaging departments/rooms (PhongBan)"
+    },
+    "/items/{itemId}": {
+      "schema": "Item",
+      "description": "Collection of inventory items (DanhSach_VatTu)"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Collection of all inventory transactions (LichSu_XuatNhap)"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection of staff users and roles (NguoiDung)"
+    },
+    "/holidays/{holidayId}": {
+      "schema": "Holiday",
+      "description": "Collection of hospital holidays"
+    }
+  }
+}
