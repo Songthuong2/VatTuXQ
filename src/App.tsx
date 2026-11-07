@@ -343,6 +343,8 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [usersList, setUsersList] = useState<StaffUser[]>([]);
+  const [usersLoaded, setUsersLoaded] = useState(false);
+  const autoRegisteredRef = useRef<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -365,6 +367,10 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
+      if (!u) {
+        setUsersLoaded(false);
+        autoRegisteredRef.current = null;
+      }
       setLoading(false);
     });
     return () => unsubscribe();
@@ -424,9 +430,79 @@ export default function App() {
 
   const handleLogout = () => signOut(auth);
 
-  // --- Data Fetching ---
+  // Kiểm tra quyền truy cập (Phê duyệt tài khoản Google)
+  const isRootAdmin = user?.email?.toLowerCase() === 'manhha2@gmail.com';
+  const currentUserRecord = useMemo(() => {
+    if (!user?.email) return undefined;
+    return usersList.find(u => u.email?.toLowerCase() === user.email?.toLowerCase());
+  }, [usersList, user?.email]);
+
+  const isApprovedUser = useMemo(() => {
+    if (!user) return false;
+    if (isRootAdmin) return true;
+    if (!currentUserRecord) return false;
+    return currentUserRecord.status !== 'Chờ duyệt' && currentUserRecord.status !== 'Tạm khóa';
+  }, [user, isRootAdmin, currentUserRecord]);
+
+  const pendingUsersCount = useMemo(
+    () => usersList.filter(u => u.status === 'Chờ duyệt').length,
+    [usersList]
+  );
+
+  // 1. Luôn lắng nghe danh sách users trước để kiểm tra phê duyệt
   useEffect(() => {
     if (!user) return;
+
+    const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
+      setUsersList(snap.docs.map(d => ({ id: d.id, ...d.data() } as StaffUser)));
+      setUsersLoaded(true);
+    }, (error) => {
+      setUsersLoaded(true);
+      handleFirestoreError(error, OperationType.GET, "users");
+    });
+
+    return () => unsubUsers();
+  }, [user]);
+
+  // 2. Tự động tạo yêu cầu "Chờ duyệt" nếu tài khoản mới đăng nhập lần đầu (hoặc tạo Admin gốc)
+  useEffect(() => {
+    if (!user?.email || !usersLoaded) return;
+    const emailLower = user.email.toLowerCase();
+    const exists = usersList.some(u => u.email?.toLowerCase() === emailLower);
+    if (exists || autoRegisteredRef.current === emailLower) return;
+
+    autoRegisteredRef.current = emailLower;
+    const registerUser = async () => {
+      try {
+        if (isRootAdmin) {
+          await addDoc(collection(db, "users"), {
+            code: 'NV-ADMIN',
+            name: user.displayName || 'Quản trị viên',
+            email: emailLower,
+            role: 'Admin',
+            status: 'Hoạt động',
+            createdAt: serverTimestamp()
+          });
+        } else {
+          await addDoc(collection(db, "users"), {
+            code: 'NV-CHO',
+            name: user.displayName || emailLower.split('@')[0],
+            email: emailLower,
+            role: 'KyThuatVien',
+            status: 'Chờ duyệt',
+            createdAt: serverTimestamp()
+          });
+        }
+      } catch (err) {
+        console.error("Auto-register user error:", err);
+      }
+    };
+    registerUser();
+  }, [user, usersLoaded, usersList, isRootAdmin]);
+
+  // 3. Chỉ tải dữ liệu kho vật tư khi tài khoản ĐÃ ĐƯỢC DUYỆT
+  useEffect(() => {
+    if (!user || !usersLoaded || !isApprovedUser) return;
 
     const unsubCats = onSnapshot(collection(db, "categories"), (snap) => {
       setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as Category)));
@@ -448,23 +524,18 @@ export default function App() {
       setHolidays(snap.docs.map(d => ({ id: d.id, ...d.data() } as Holiday)));
     }, (error) => handleFirestoreError(error, OperationType.GET, "holidays"));
 
-    const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
-      setUsersList(snap.docs.map(d => ({ id: d.id, ...d.data() } as StaffUser)));
-    }, (error) => handleFirestoreError(error, OperationType.GET, "users"));
-
     return () => {
       unsubCats();
       unsubDepts();
       unsubItems();
       unsubTrans();
       unsubHolidays();
-      unsubUsers();
     };
-  }, [user]);
+  }, [user, usersLoaded, isApprovedUser]);
 
   // Initialize default departments
   useEffect(() => {
-    if (!user || departments.length > 0) return;
+    if (!user || !usersLoaded || !isApprovedUser || departments.length > 0) return;
     const initDepts = async () => {
       try {
         const defaults = ["Tất cả", "X quang", "CLVT"];
@@ -481,7 +552,7 @@ export default function App() {
       }
     };
     initDepts();
-  }, [user, departments.length]);
+  }, [user, usersLoaded, isApprovedUser, departments.length]);
 
   // --- AI Analysis ---
   const runAiAnalysis = async () => {
@@ -491,10 +562,10 @@ export default function App() {
     setIsAnalyzing(false);
   };
 
-  if (loading) {
+  if (loading || (user && !usersLoaded)) {
     return (
       <ErrorBoundary>
-        <div className="h-screen w-screen flex items-center justify-center bg-slate-50">
+        <div className="h-screen w-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900">
           <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
         </div>
       </ErrorBoundary>
@@ -521,8 +592,65 @@ export default function App() {
             </button>
             <div className={`mt-4 flex items-center justify-center gap-2 text-xs ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
               <AlertCircle className="w-4 h-4" />
-              <span>Nếu không thấy cửa sổ đăng nhập, hãy kiểm tra trình chặn popup.</span>
+              <span>Chỉ những tài khoản Google đã được Quản trị viên phê duyệt mới được phép truy cập.</span>
             </div>
+          </div>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  if (!isApprovedUser) {
+    const isLocked = currentUserRecord?.status === 'Tạm khóa';
+    return (
+      <ErrorBoundary>
+        <div className={`h-screen w-screen flex flex-col items-center justify-center p-4 ${darkMode ? 'bg-slate-900' : 'bg-slate-50'}`}>
+          <Toaster position="top-right" richColors />
+          <div className={`max-w-md w-full rounded-3xl shadow-2xl p-8 text-center border ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
+            <div className={`w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg ${
+              isLocked ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400' : 'bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400'
+            }`}>
+              {isLocked ? <AlertTriangle className="w-10 h-10" /> : <Clock className="w-10 h-10" />}
+            </div>
+
+            <h2 className={`text-2xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              {isLocked ? 'Tài khoản đã bị khóa quyền truy cập' : 'Đang chờ Quản trị viên phê duyệt'}
+            </h2>
+
+            <div className={`my-5 p-4 rounded-2xl border flex items-center gap-3 text-left ${
+              darkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <img
+                src={user.photoURL || 'https://www.google.com/favicon.ico'}
+                alt="Avatar"
+                className="w-11 h-11 rounded-full border-2 border-white shadow-sm shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <p className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {user.displayName || 'Người dùng Google'}
+                </p>
+                <p className="text-xs font-mono text-slate-500 truncate">{user.email}</p>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold shrink-0 ${
+                isLocked ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'
+              }`}>
+                {isLocked ? 'Đã khóa' : 'Chờ duyệt'}
+              </span>
+            </div>
+
+            <p className={`text-sm mb-6 leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+              {isLocked
+                ? 'Tài khoản Google này hiện đang bị khóa quyền truy cập vào hệ thống Vật tư Chẩn đoán Hình ảnh. Vui lòng liên hệ Quản trị viên để được mở khóa.'
+                : 'Yêu cầu đăng nhập của bạn đã được gửi tới Quản trị viên hệ thống. Ngay khi Quản trị viên nhấn "Duyệt" trong mục Người dùng, màn hình này sẽ tự động mở khóa.'}
+            </p>
+
+            <button
+              onClick={handleLogout}
+              className="w-full py-3.5 px-6 bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Đăng xuất / Đổi tài khoản Google khác</span>
+            </button>
           </div>
         </div>
       </ErrorBoundary>
@@ -628,6 +756,7 @@ export default function App() {
               active={activeTab === 'users'} 
               onClick={() => {setActiveTab('users'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              badge={pendingUsersCount > 0 ? pendingUsersCount : undefined}
             />
             <NavItem 
               icon={<BrainCircuit />} 
@@ -666,21 +795,23 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* Header */}
-        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-4 lg:px-8 sticky top-0 z-40 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-          <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-            <Menu className="w-6 h-6" />
-          </button>
-          <h2 className={`text-lg font-semibold capitalize ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-            {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
-             activeTab === 'inventory' ? 'Quản lý Vật tư' : 
-             activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
-             activeTab === 'audit' ? 'Kiểm kê kho' :
-             activeTab === 'planning' ? 'Dự trù vật tư' :
-             activeTab === 'reports' ? 'Báo cáo thống kê' : 
-             activeTab === 'holidays' ? 'Quản lý ngày nghỉ' : 
-             activeTab === 'google-sheets' ? 'Mẫu & Đồng bộ Google Sheets CĐHA' :
-             activeTab === 'users' ? 'Người dùng & Phân quyền Cán bộ' : 'Trợ lý AI Gemini'}
-          </h2>
+        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-3 sm:px-4 lg:px-8 sticky top-0 z-40 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 rounded-xl transition-colors shrink-0 ${darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+              <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
+            </button>
+            <h2 className={`text-base sm:text-lg font-bold capitalize truncate max-w-[200px] sm:max-w-md ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
+               activeTab === 'inventory' ? 'Quản lý Vật tư' : 
+               activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
+               activeTab === 'audit' ? 'Kiểm kê kho' :
+               activeTab === 'planning' ? 'Dự trù vật tư' :
+               activeTab === 'reports' ? 'Báo cáo thống kê' : 
+               activeTab === 'holidays' ? 'Quản lý ngày nghỉ' : 
+               activeTab === 'google-sheets' ? 'Mẫu & Đồng bộ Google Sheets' :
+               activeTab === 'users' ? 'Người dùng & Cán bộ' : 'Trợ lý AI Gemini'}
+            </h2>
+          </div>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setActiveTab('google-sheets')}
@@ -777,7 +908,7 @@ export default function App() {
         </header>
 
         {/* Scrollable Area */}
-        <div className="flex-1 overflow-y-auto p-4 lg:p-8">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-8 pb-24 md:pb-8">
           {activeTab === 'dashboard' && (
             <Dashboard 
               items={items} 
@@ -825,6 +956,72 @@ export default function App() {
             />
           )}
         </div>
+
+        {/* Mobile Bottom Navigation Bar (< md) */}
+        <nav className={`md:hidden shrink-0 border-t flex items-center justify-around h-16 px-1 safe-area-pb z-40 ${
+          darkMode ? 'bg-slate-900/95 border-slate-800 text-slate-400' : 'bg-white/95 border-slate-200 text-slate-600'
+        }`}>
+          <button
+            type="button"
+            onClick={() => setActiveTab('inventory')}
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+              activeTab === 'inventory' 
+                ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
+                : 'hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Package className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] whitespace-nowrap">Vật tư</span>
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => setActiveTab('transactions')}
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+              activeTab === 'transactions' 
+                ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
+                : 'hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <ArrowLeftRight className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] whitespace-nowrap">Giao dịch</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('audit')}
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+              activeTab === 'audit' 
+                ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
+                : 'hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <ClipboardCheck className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] whitespace-nowrap">Kiểm kê</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('planning')}
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+              activeTab === 'planning' 
+                ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
+                : 'hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <CalendarRange className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] whitespace-nowrap">Dự trù</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors"
+          >
+            <Menu className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] whitespace-nowrap">Thêm</span>
+          </button>
+        </nav>
       </main>
 
       {/* Reset Confirmation Modal */}
@@ -863,19 +1060,26 @@ export default function App() {
 
 // --- Sub-components ---
 
-function NavItem({ icon, label, active, onClick, darkMode }: { icon: any, label: string, active: boolean, onClick: () => void, darkMode?: boolean }) {
+function NavItem({ icon, label, active, onClick, darkMode, badge }: { icon: any, label: string, active: boolean, onClick: () => void, darkMode?: boolean, badge?: number }) {
   return (
     <button 
       onClick={onClick}
       className={`
-        w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all
+        w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl transition-all
         ${active 
           ? (darkMode ? 'bg-blue-900/30 text-blue-400 font-semibold' : 'bg-blue-50 text-blue-600 font-semibold shadow-sm') 
           : (darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-100' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900')}
       `}
     >
-      {React.cloneElement(icon, { className: 'w-5 h-5' })}
-      <span>{label}</span>
+      <div className="flex items-center gap-3 min-w-0">
+        {React.cloneElement(icon, { className: 'w-5 h-5 shrink-0' })}
+        <span className="truncate">{label}</span>
+      </div>
+      {badge && badge > 0 ? (
+        <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-amber-500 text-white shrink-0">
+          {badge}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -2249,117 +2453,51 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
         </div>
       </div>
 
-      <div className={`rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-              <th className="px-6 py-4 w-10">
-                <input 
-                  type="checkbox" 
-                  className={`rounded focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-blue-500' : 'border-slate-300 text-blue-600'}`}
-                  checked={filteredAndSortedItems.length > 0 && selectedIds.length === filteredAndSortedItems.length}
-                  onChange={toggleSelectAll}
-                />
-              </th>
-              <th 
-                className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
-                onClick={() => handleSort('name')}
-              >
-                <div className="flex items-center gap-1">
-                  Tên vật tư {sortKey === 'name' && (sortOrder === 'asc' ? '↑' : '↓')}
-                </div>
-              </th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Nhóm</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phòng</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Đơn vị</th>
-              <th 
-                className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
-                onClick={() => handleSort('price')}
-              >
-                <div className="flex items-center gap-1">
-                  Đơn giá {sortKey === 'price' && (sortOrder === 'asc' ? '↑' : '↓')}
-                </div>
-              </th>
-              <th 
-                className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
-                onClick={() => handleSort('currentStock')}
-              >
-                <div className="flex items-center gap-1">
-                  Tồn kho {sortKey === 'currentStock' && (sortOrder === 'asc' ? '↑' : '↓')}
-                </div>
-              </th>
-              <th 
-                className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
-                onClick={() => handleSort('expiryDate')}
-              >
-                <div className="flex items-center gap-1">
-                  Hạn dùng {sortKey === 'expiryDate' && (sortOrder === 'asc' ? '↑' : '↓')}
-                </div>
-              </th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Trạng thái</th>
-            </tr>
-          </thead>
-          <tbody className={`divide-y ${darkMode ? 'divide-slate-700' : 'divide-slate-100'}`}>
-            {filteredAndSortedItems.map(item => {
-              const category = categories.find(c => c.id === item.categoryId);
-              const isLow = item.currentStock <= item.minStock;
-              const now = new Date();
-              const expiryDate = item.expiryDate ? new Date(item.expiryDate) : null;
-              const isExpired = expiryDate && expiryDate < now;
-              const isNearingExpiry = expiryDate && 
-                (expiryDate.getTime() - now.getTime()) < (30 * 24 * 60 * 60 * 1000) &&
-                (expiryDate.getTime() - now.getTime()) > 0;
+      {/* Mobile Card View (Hiển thị tối ưu dạng thẻ trên điện thoại di động) */}
+      <div className="md:hidden space-y-3">
+        {filteredAndSortedItems.length === 0 ? (
+          <div className={`p-8 text-center rounded-2xl border text-sm ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-500'}`}>
+            Không tìm thấy vật tư nào phù hợp với bộ lọc.
+          </div>
+        ) : (
+          filteredAndSortedItems.map(item => {
+            const category = categories.find(c => c.id === item.categoryId);
+            const dept = departments.find(d => d.id === item.departmentId);
+            const isLow = item.currentStock <= item.minStock;
+            const now = new Date();
+            const expiryDate = item.expiryDate ? new Date(item.expiryDate) : null;
+            const isExpired = expiryDate && expiryDate < now;
+            const isNearingExpiry = expiryDate && 
+              (expiryDate.getTime() - now.getTime()) < (30 * 24 * 60 * 60 * 1000) &&
+              (expiryDate.getTime() - now.getTime()) > 0;
+            const isSelected = selectedIds.includes(item.id);
 
-              return (
-                <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50'} ${isExpired ? (darkMode ? 'bg-red-900/10' : 'bg-red-50/30') : isNearingExpiry ? (darkMode ? 'bg-orange-900/10' : 'bg-orange-50/30') : ''} ${selectedIds.includes(item.id) ? (darkMode ? 'bg-blue-900/20' : 'bg-blue-50/50') : ''}`}>
-                  <td className="px-6 py-4">
+            return (
+              <div 
+                key={item.id}
+                className={`p-4 rounded-2xl border transition-all ${
+                  darkMode ? 'bg-slate-800 border-slate-700/80 shadow-sm' : 'bg-white border-slate-200 shadow-sm'
+                } ${isSelected ? (darkMode ? 'ring-2 ring-blue-500 bg-blue-950/20' : 'ring-2 ring-blue-500 bg-blue-50/40') : ''}`}
+              >
+                {/* Header card: Checkbox, Code, Status & Edit Button */}
+                <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-700/60">
+                  <div className="flex items-center gap-2.5 min-w-0">
                     <input 
                       type="checkbox" 
-                      className={`rounded focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-blue-500' : 'border-slate-300 text-blue-600'}`}
-                      checked={selectedIds.includes(item.id)}
+                      className={`w-4 h-4 rounded focus:ring-blue-500 shrink-0 ${darkMode ? 'bg-slate-700 border-slate-600 text-blue-500' : 'border-slate-300 text-blue-600'}`}
+                      checked={isSelected}
                       onChange={() => toggleSelect(item.id)}
                     />
-                  </td>
-                  <td className={`px-6 py-4 font-medium ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                    <div className="flex flex-col">
-                      <div className="flex items-center gap-2 group">
-                        {item.code && (
-                          <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800 shrink-0">
-                            {item.code}
-                          </span>
-                        )}
-                        <span className="font-semibold">{item.name}</span>
-                        <button 
-                          onClick={() => handleEdit(item)}
-                          className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 ${darkMode ? 'text-slate-500 hover:text-blue-400' : 'text-slate-400 hover:text-blue-600'}`}
-                          title="Chỉnh sửa nhanh"
-                        >
-                          <Pencil className="w-3 h-3" />
-                        </button>
-                        {isExpired && <span title="Đã hết hạn"><AlertTriangle className="w-4 h-4 text-red-600" /></span>}
-                        {isNearingExpiry && <span title="Sắp hết hạn"><AlertTriangle className="w-4 h-4 text-orange-600" /></span>}
-                      </div>
-                      {(item.specification || item.manufacturer) && (
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
-                          {item.specification && <span>Quy cách: {item.specification}</span>}
-                          {item.specification && item.manufacturer && <span>•</span>}
-                          {item.manufacturer && <span>Hãng: {item.manufacturer}</span>}
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                  <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{category?.name || 'N/A'}</td>
-                  <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                    {departments.find(d => d.id === item.departmentId)?.name || '-'}
-                  </td>
-                  <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{item.unit}</td>
-                  <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{(item.price || 0).toLocaleString('vi-VN')} đ</td>
-                  <td className={`px-6 py-4 font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{formatQty(item.currentStock)}</td>
-                  <td className={`px-6 py-4 font-medium ${isExpired ? 'text-red-600' : isNearingExpiry ? 'text-orange-600' : (darkMode ? 'text-slate-400' : 'text-slate-500')}`}>
-                    {formatDate(item.expiryDate)}
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase whitespace-nowrap border ${
+                    {item.code ? (
+                      <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800 shrink-0">
+                        {item.code}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono">VT----</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase whitespace-nowrap border ${
                       isExpired 
                         ? (darkMode ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-red-100 text-red-600 border-red-200') : 
                       isNearingExpiry 
@@ -2370,12 +2508,214 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                     }`}>
                       {isExpired ? 'Hết hạn' : isNearingExpiry ? 'Sắp hết hạn' : isLow ? 'Cần nhập' : 'An toàn'}
                     </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    <button 
+                      onClick={() => handleEdit(item)}
+                      className={`p-1.5 rounded-lg border transition-colors ${
+                        darkMode ? 'border-slate-700 text-slate-400 hover:text-blue-400 hover:bg-slate-700' : 'border-slate-200 text-slate-500 hover:text-blue-600 hover:bg-slate-50'
+                      }`}
+                      title="Chỉnh sửa vật tư"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Tên vật tư & thông tin kỹ thuật */}
+                <div className="py-2.5">
+                  <h4 className={`text-sm font-bold leading-snug ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {item.name}
+                  </h4>
+                  {(item.specification || item.manufacturer) && (
+                    <p className={`text-xs mt-1 leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {item.specification}
+                      {item.specification && item.manufacturer ? ' • ' : ''}
+                      {item.manufacturer && `Hãng: ${item.manufacturer}`}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                    {category && (
+                      <span className={`text-[11px] px-2 py-0.5 rounded-md ${darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                        {category.name}
+                      </span>
+                    )}
+                    {dept && dept.name !== '-' && (
+                      <span className={`text-[11px] px-2 py-0.5 rounded-md ${darkMode ? 'bg-indigo-950/60 text-indigo-300 border border-indigo-800/40' : 'bg-indigo-50 text-indigo-700'}`}>
+                        Phòng {dept.name}
+                      </span>
+                    )}
+                    {item.expiryDate && (
+                      <span className={`text-[11px] px-2 py-0.5 rounded-md ${
+                        isExpired ? 'bg-red-50 text-red-600 font-bold dark:bg-red-950/60 dark:text-red-300' : 
+                        isNearingExpiry ? 'bg-orange-50 text-orange-600 font-bold dark:bg-orange-950/60 dark:text-orange-300' : 
+                        (darkMode ? 'bg-slate-700 text-slate-400' : 'bg-slate-100 text-slate-600')
+                      }`}>
+                        Hạn: {formatDate(item.expiryDate)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer card: Tồn kho thực tế nổi bật & đơn giá */}
+                <div className={`pt-2.5 mt-1 border-t flex items-center justify-between ${darkMode ? 'border-slate-700/60' : 'border-slate-100'}`}>
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold">Tồn kho hiện tại:</span>
+                    <div className="flex items-baseline gap-1 mt-0.5">
+                      <span className={`text-lg font-black ${isLow ? 'text-amber-500 dark:text-amber-400' : (darkMode ? 'text-white' : 'text-slate-900')}`}>
+                        {formatQty(item.currentStock)}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        {item.unit}
+                      </span>
+                      <span className="text-[10px] text-slate-400 ml-1">
+                        (Tối thiểu: {formatQty(item.minStock)})
+                      </span>
+                    </div>
+                  </div>
+                  {item.price ? (
+                    <div className="text-right">
+                      <span className="text-[11px] text-slate-400 uppercase font-semibold">Đơn giá:</span>
+                      <p className={`text-xs font-bold mt-0.5 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                        {(item.price || 0).toLocaleString('vi-VN')} đ
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Desktop Table View (Giữ nguyên giao diện bảng chuẩn cho màn hình máy tính) */}
+      <div className={`hidden md:block rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                <th className="px-6 py-4 w-10">
+                  <input 
+                    type="checkbox" 
+                    className={`rounded focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-blue-500' : 'border-slate-300 text-blue-600'}`}
+                    checked={filteredAndSortedItems.length > 0 && selectedIds.length === filteredAndSortedItems.length}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+                <th 
+                  className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                  onClick={() => handleSort('name')}
+                >
+                  <div className="flex items-center gap-1">
+                    Tên vật tư {sortKey === 'name' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Nhóm</th>
+                <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Phòng</th>
+                <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Đơn vị</th>
+                <th 
+                  className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                  onClick={() => handleSort('price')}
+                >
+                  <div className="flex items-center gap-1">
+                    Đơn giá {sortKey === 'price' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th 
+                  className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                  onClick={() => handleSort('currentStock')}
+                >
+                  <div className="flex items-center gap-1">
+                    Tồn kho {sortKey === 'currentStock' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th 
+                  className={`px-6 py-4 text-xs font-bold uppercase tracking-wider cursor-pointer transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                  onClick={() => handleSort('expiryDate')}
+                >
+                  <div className="flex items-center gap-1">
+                    Hạn dùng {sortKey === 'expiryDate' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </div>
+                </th>
+                <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody className={`divide-y ${darkMode ? 'divide-slate-700' : 'divide-slate-100'}`}>
+              {filteredAndSortedItems.map(item => {
+                const category = categories.find(c => c.id === item.categoryId);
+                const isLow = item.currentStock <= item.minStock;
+                const now = new Date();
+                const expiryDate = item.expiryDate ? new Date(item.expiryDate) : null;
+                const isExpired = expiryDate && expiryDate < now;
+                const isNearingExpiry = expiryDate && 
+                  (expiryDate.getTime() - now.getTime()) < (30 * 24 * 60 * 60 * 1000) &&
+                  (expiryDate.getTime() - now.getTime()) > 0;
+
+                return (
+                  <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50'} ${isExpired ? (darkMode ? 'bg-red-900/10' : 'bg-red-50/30') : isNearingExpiry ? (darkMode ? 'bg-orange-900/10' : 'bg-orange-50/30') : ''} ${selectedIds.includes(item.id) ? (darkMode ? 'bg-blue-900/20' : 'bg-blue-50/50') : ''}`}>
+                    <td className="px-6 py-4">
+                      <input 
+                        type="checkbox" 
+                        className={`rounded focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-blue-500' : 'border-slate-300 text-blue-600'}`}
+                        checked={selectedIds.includes(item.id)}
+                        onChange={() => toggleSelect(item.id)}
+                      />
+                    </td>
+                    <td className={`px-6 py-4 font-medium ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2 group">
+                          {item.code && (
+                            <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800 shrink-0">
+                              {item.code}
+                            </span>
+                          )}
+                          <span className="font-semibold">{item.name}</span>
+                          <button 
+                            onClick={() => handleEdit(item)}
+                            className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 ${darkMode ? 'text-slate-500 hover:text-blue-400' : 'text-slate-400 hover:text-blue-600'}`}
+                            title="Chỉnh sửa nhanh"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                          {isExpired && <span title="Đã hết hạn"><AlertTriangle className="w-4 h-4 text-red-600" /></span>}
+                          {isNearingExpiry && <span title="Sắp hết hạn"><AlertTriangle className="w-4 h-4 text-orange-600" /></span>}
+                        </div>
+                        {(item.specification || item.manufacturer) && (
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                            {item.specification && <span>Quy cách: {item.specification}</span>}
+                            {item.specification && item.manufacturer && <span>•</span>}
+                            {item.manufacturer && <span>Hãng: {item.manufacturer}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{category?.name || 'N/A'}</td>
+                    <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {departments.find(d => d.id === item.departmentId)?.name || '-'}
+                    </td>
+                    <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{item.unit}</td>
+                    <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{(item.price || 0).toLocaleString('vi-VN')} đ</td>
+                    <td className={`px-6 py-4 font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{formatQty(item.currentStock)}</td>
+                    <td className={`px-6 py-4 font-medium ${isExpired ? 'text-red-600' : isNearingExpiry ? 'text-orange-600' : (darkMode ? 'text-slate-400' : 'text-slate-500')}`}>
+                      {formatDate(item.expiryDate)}
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase whitespace-nowrap border ${
+                        isExpired 
+                          ? (darkMode ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-red-100 text-red-600 border-red-200') : 
+                        isNearingExpiry 
+                          ? (darkMode ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 'bg-orange-100 text-orange-600 border-orange-200') :
+                        isLow 
+                          ? (darkMode ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-amber-100 text-amber-600 border-amber-200') : 
+                          (darkMode ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-emerald-100 text-emerald-600 border-emerald-200')
+                      }`}>
+                        {isExpired ? 'Hết hạn' : isNearingExpiry ? 'Sắp hết hạn' : isLow ? 'Cần nhập' : 'An toàn'}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
         {filteredAndSortedItems.length === 0 && (
           <div className="p-12 text-center text-slate-500">
             Không tìm thấy vật tư nào phù hợp với bộ lọc.
@@ -2965,7 +3305,107 @@ function Transactions({ transactions, items, departments, categories, globalSear
         </div>
       </div>
 
-      <div className={`rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+      {/* Mobile Transactions Card View (< md) */}
+      <div className="md:hidden space-y-3">
+        {filteredTransactions.length === 0 ? (
+          <div className={`p-8 text-center rounded-2xl border ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-500'}`}>
+            Không có giao dịch nào phù hợp.
+          </div>
+        ) : (
+          filteredTransactions.map(t => {
+            const item = items.find(i => i.id === t.itemId);
+            const toDept = departments.find(d => d.id === t.toDeptId);
+            const fromDept = departments.find(d => d.id === t.fromDeptId);
+            const unitPrice = t.unitPrice || item?.price || 0;
+            const totalAmount = t.quantity * unitPrice;
+
+            return (
+              <div 
+                key={t.id} 
+                className={`p-4 rounded-2xl border shadow-sm transition-all ${
+                  darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                }`}
+              >
+                {/* Header: Date + Type badge + Action */}
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700/60">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-mono font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {formatTimestamp(t.timestamp)}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      t.type === 'IN' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' : 
+                      t.type === 'OUT' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' : 
+                      'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
+                    }`}>
+                      {t.type === 'IN' ? 'Nhập kho' : t.type === 'OUT' ? 'Xuất kho' : 'Chuyển'}
+                    </span>
+                  </div>
+                  <button 
+                    onClick={() => confirmDelete(t)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                    title="Xóa giao dịch"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Body: Item Name & Notes */}
+                <div className="py-2.5">
+                  <h4 className={`text-sm font-bold leading-snug ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {item?.name || 'Vật tư không xác định'}
+                  </h4>
+                  {item?.code && (
+                    <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 block mt-0.5">
+                      Mã: {item.code}
+                    </span>
+                  )}
+                  {t.note && (
+                    <p className={`text-xs mt-1 italic ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      "{t.note}"
+                    </p>
+                  )}
+                </div>
+
+                {/* Footer Metrics */}
+                <div className={`pt-2.5 border-t grid grid-cols-2 gap-2 text-xs ${darkMode ? 'border-slate-700/60' : 'border-slate-100'}`}>
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold">Số lượng:</span>
+                    <p className={`text-base font-black mt-0.5 ${
+                      t.type === 'IN' ? 'text-emerald-600 dark:text-emerald-400' : 
+                      t.type === 'OUT' ? 'text-rose-600 dark:text-rose-400' : 
+                      (darkMode ? 'text-white' : 'text-slate-900')
+                    }`}>
+                      {t.type === 'IN' ? '+' : t.type === 'OUT' ? '-' : ''}{formatQty(t.quantity)} {item?.unit || ''}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold">Thành tiền:</span>
+                    <p className={`text-sm font-bold mt-0.5 ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                      {totalAmount.toLocaleString('vi-VN')} đ
+                    </p>
+                  </div>
+                  {(toDept || fromDept) && (
+                    <div className="col-span-2 pt-1 flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                      <span className="font-semibold">Bộ phận:</span>
+                      <span>
+                        {t.type === 'TRANSFER' && fromDept ? `${fromDept.name} ➔ ${toDept?.name || 'Phòng nhận'}` : (toDept?.name || fromDept?.name || '-')}
+                      </span>
+                    </div>
+                  )}
+                  {t.performer && (
+                    <div className="col-span-2 text-[11px] text-slate-400">
+                      Người thực hiện: <span className="font-medium text-slate-600 dark:text-slate-300">{t.performer}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Desktop Table View (>= md) */}
+      <div className={`hidden md:block rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
@@ -3289,7 +3729,124 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
         </div>
       </div>
 
-      <div className={`rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+      {/* Mobile Audit Card List (< md) */}
+      <div className="md:hidden space-y-3">
+        {filteredItems.length === 0 ? (
+          <div className={`p-8 text-center rounded-2xl border ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-500'}`}>
+            Không tìm thấy vật tư nào để kiểm kê.
+          </div>
+        ) : (
+          filteredItems.map(item => {
+            const auditVal = auditData[item.id];
+            const actual = auditVal === undefined || auditVal === '' ? item.currentStock : parseFloat(auditVal);
+            const diff = item.currentStock - actual;
+            const category = categories.find(c => c.id === item.categoryId);
+            const isModified = auditVal !== undefined && auditVal !== '';
+
+            return (
+              <div 
+                key={item.id}
+                className={`p-4 rounded-2xl border transition-all ${
+                  isModified 
+                    ? (darkMode ? 'bg-slate-800 border-blue-500/60 shadow-md ring-1 ring-blue-500/30' : 'bg-white border-blue-300 shadow-md ring-1 ring-blue-200')
+                    : (darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200')
+                }`}
+              >
+                {/* Header: Name, Unit, Category & Diff Badge */}
+                <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-700/60">
+                  <div className="min-w-0 flex-1">
+                    <h4 className={`text-sm font-bold leading-snug ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      {item.name}
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                      {category && (
+                        <span className={`text-[11px] px-2 py-0.5 rounded-md ${darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                          {category.name}
+                        </span>
+                      )}
+                      <span className="text-[11px] text-slate-400">Đơn vị: {item.unit}</span>
+                    </div>
+                  </div>
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap shrink-0 ${
+                    diff > 0 
+                      ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' 
+                      : diff < 0 
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' 
+                      : (darkMode ? 'bg-slate-700 text-slate-400' : 'bg-slate-100 text-slate-500')
+                  }`}>
+                    {diff > 0 ? `Tiêu hao: +${formatQty(diff)}` : diff < 0 ? `Dư: ${formatQty(diff)}` : 'Khớp'}
+                  </span>
+                </div>
+
+                {/* Body: Tồn hệ thống vs Nhập tồn thực tế */}
+                <div className="pt-3 grid grid-cols-2 gap-3 items-center">
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold block">Tồn PM hiện tại:</span>
+                    <span className={`text-base font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      {formatQty(item.currentStock)} <span className="text-xs font-normal text-slate-400">{item.unit}</span>
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold block mb-1">Tồn thực tế đếm được:</span>
+                    <input 
+                      type="number" 
+                      step="any"
+                      value={auditData[item.id] ?? ''}
+                      placeholder={item.currentStock.toString()}
+                      onChange={(e) => handleActualChange(item.id, e.target.value)}
+                      className={`w-full px-3 py-2 text-center text-sm font-bold rounded-xl border focus:ring-2 focus:ring-blue-500 ${
+                        darkMode 
+                          ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' 
+                          : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Quick actions for mobile */}
+                <div className="flex items-center justify-end gap-1.5 mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-700/40">
+                  <span className="text-[10px] text-slate-400 mr-auto">Điền nhanh:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleActualChange(item.id, item.currentStock.toString())}
+                    className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors ${
+                      darkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-700' : 'border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    = Tồn PM
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleActualChange(item.id, '0')}
+                    className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors ${
+                      darkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-700' : 'border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    = 0
+                  </button>
+                  {isModified && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = { ...auditData };
+                        delete next[item.id];
+                        setAuditData(next);
+                      }}
+                      className="px-2 py-1 text-[11px] text-rose-500 hover:underline"
+                    >
+                      Bỏ sửa
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Desktop Audit Table View (>= md) */}
+      <div className={`hidden md:block rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
@@ -3518,7 +4075,106 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
         </div>
       </div>
 
-      <div className={`rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+      {/* Mobile Planning Card List (< md) */}
+      <div className="md:hidden space-y-3">
+        {filteredItems.length === 0 ? (
+          <div className={`p-8 text-center rounded-2xl border ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-500'}`}>
+            Không có vật tư nào.
+          </div>
+        ) : (
+          filteredItems.map(item => {
+            const result = results[item.id];
+            const category = categories.find(c => c.id === item.categoryId);
+
+            return (
+              <div 
+                key={item.id}
+                className={`p-4 rounded-2xl border shadow-sm transition-all ${
+                  darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                }`}
+              >
+                {/* Header: Item name + Category + Replenishment status */}
+                <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-700/60">
+                  <div className="min-w-0 flex-1">
+                    <h4 className={`text-sm font-bold leading-snug ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      {item.name}
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                      {category && (
+                        <span className={`text-[11px] px-2 py-0.5 rounded-md ${darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+                          {category.name}
+                        </span>
+                      )}
+                      <span className="text-[11px] text-slate-400">Đơn vị: {item.unit}</span>
+                    </div>
+                  </div>
+                  <div>
+                    {result && result.needed > 0 ? (
+                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 whitespace-nowrap">
+                        Cần nhập: +{formatQty(result.needed)}
+                      </span>
+                    ) : result ? (
+                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 whitespace-nowrap">
+                        Đủ dùng
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400">Chưa tính</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Stock Details & Input */}
+                <div className="py-2.5 grid grid-cols-2 gap-3 items-center">
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold block">Tồn PM hiện tại:</span>
+                    <span className={`text-base font-black ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                      {formatQty(item.currentStock)} {item.unit}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold block mb-1">Tồn thực tế kiểm tra:</span>
+                    <input 
+                      type="number" 
+                      step="any"
+                      value={actualStockData[item.id] ?? ''}
+                      placeholder={item.currentStock.toString()}
+                      onChange={(e) => {
+                        setActualStockData(prev => ({ ...prev, [item.id]: e.target.value }));
+                      }}
+                      className={`w-full px-3 py-2 text-center text-sm font-bold rounded-xl border focus:ring-2 focus:ring-blue-500 ${
+                        darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Depletion Forecast & Daily Usage Footer */}
+                <div className={`pt-2.5 border-t grid grid-cols-2 gap-2 text-xs ${darkMode ? 'border-slate-700/60' : 'border-slate-100'}`}>
+                  <div>
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold block">Tiêu hao TB:</span>
+                    <span className={`font-semibold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                      {result ? `${result.dailyUsage.toFixed(2)} ${item.unit}/ngày` : '-'}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] text-slate-400 uppercase font-semibold block">Dự kiến hết:</span>
+                    <span className={`font-bold ${
+                      result?.depletionDate && result.depletionDate !== 'N/A' && result.depletionDate !== '> 2 năm'
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : (darkMode ? 'text-slate-300' : 'text-slate-600')
+                    }`}>
+                      {result?.depletionDate || '-'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Desktop Planning Table View (>= md) */}
+      <div className={`hidden md:block rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
@@ -4335,7 +4991,49 @@ function Reports({ transactions, items, categories, departments, holidays, globa
             </label>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        {/* Mobile Detailed Report Card List (< md) */}
+        <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-700/60">
+          {filteredDetailedReport.length > 0 ? (
+            filteredDetailedReport.map((item) => (
+              <div key={item.id} className="p-4 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h5 className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</h5>
+                    <span className="text-[11px] text-slate-400">{categories.find(c => c.id === item.categoryId)?.name} · ĐV: {item.unit}</span>
+                  </div>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-md shrink-0 ${darkMode ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-800'}`}>
+                    Tồn cuối: {formatQty(item.closingBalance)}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-xs pt-1">
+                  <div className={`p-2 rounded-lg ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+                    <span className="text-[10px] text-slate-400 block">Tồn đầu</span>
+                    <span className="font-semibold">{formatQty(item.openingBalance)}</span>
+                  </div>
+                  <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                    <span className="text-[10px] block opacity-80">Nhập</span>
+                    <span className="font-bold">+{formatQty(item.inQty)}</span>
+                  </div>
+                  <div className="p-2 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400">
+                    <span className="text-[10px] block opacity-80">Xuất</span>
+                    <span className="font-bold">-{formatQty(item.outQty)}</span>
+                  </div>
+                </div>
+                <div className="text-[11px] text-slate-400 flex justify-between items-center pt-0.5">
+                  <span>Tiêu thụ trung bình:</span>
+                  <span className="font-medium text-slate-600 dark:text-slate-300">{item.avgDailyUsage.toFixed(2)} {item.unit}/ngày</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="p-8 text-center text-slate-400">
+              Không tìm thấy dữ liệu phù hợp
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Detailed Report Table (>= md) */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={`${darkMode ? 'bg-slate-900/50' : 'bg-slate-50/50'}`}>
