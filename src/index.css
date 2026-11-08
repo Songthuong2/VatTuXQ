@@ -1,4 +1,6 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @layer utilities {
   .no-scrollbar::-webkit-scrollbar {
@@ -22,3 +24,52 @@
     background: #475569;
   }
 }
+
+/* ============================================================
+   CHUẨN GIAO DIỆN Y TẾ CHÍNH THỨC (MEDICAL BLUE & WHITE THEME)
+   Phù hợp cho website bệnh viện & khoa Chẩn đoán hình ảnh
+   ============================================================ */
+
+.theme-medical body,
+body.theme-medical,
+[data-theme="medical"] body {
+  background-color: #f0f6fc !important;
+  color: #0f172a !important;
+}
+
+.theme-medical .border-slate-200 {
+  border-color: #dbeafe !important;
+}
+
+.theme-medical .border-slate-100 {
+  border-color: #e2eefb !important;
+}
+
+.theme-medical .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e2eefb !important;
+}
+
+.theme-medical .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #dbeafe !important;
+}
+
+.theme-medical .bg-white {
+  background-color: #ffffff !important;
+}
+
+.theme-medical .bg-slate-50 {
+  background-color: #f0f6fc !important;
+}
+
+.theme-medical .text-blue-600 {
+  color: #1a56db !important;
+}
+
+.theme-medical .bg-blue-600 {
+  background-color: #1a56db !important;
+}
+
+.theme-medical .hover\:bg-blue-700:hover {
+  background-color: #1e429f !important;
+}
+

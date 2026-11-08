@@ -39,7 +39,12 @@ import {
   ClipboardList,
   PieChart as PieChartIcon,
   FileSpreadsheet,
-  Users
+  Users,
+  Layers,
+  ChevronDown,
+  Tag,
+  Sparkles,
+  Info
 } from 'lucide-react';
 import { GoogleSheetsHub } from './GoogleSheetsHub';
 import { UsersManager, StaffUser } from './UsersManager';
@@ -110,6 +115,15 @@ interface Department {
   location?: string;
   note?: string;
 }
+interface ItemBatch {
+  id: string;
+  batchNumber: string; // Số lô (vd: LO-2026-01)
+  quantity: number; // Số lượng tồn của lô này
+  expiryDate: string; // Hạn dùng YYYY-MM-DD
+  importDate?: string; // Ngày nhập kho YYYY-MM-DD
+  note?: string; // Ghi chú lô
+}
+
 interface Item { 
   id: string; 
   name: string; 
@@ -124,6 +138,7 @@ interface Item {
   expiryDate?: string;
   price?: number;
   note?: string;
+  batches?: ItemBatch[];
   createdAt?: any;
 }
 interface Holiday {
@@ -141,6 +156,7 @@ interface Transaction {
   quantity: number;
   unitPrice?: number;
   totalAmount?: number;
+  batchId?: string;
   batchNumber?: string;
   batchExpiry?: string;
   performer?: string;
@@ -229,6 +245,96 @@ const formatQty = (num: number | string | undefined) => {
   return Number(n.toFixed(10)).toString();
 };
 
+const removeVietnameseTones = (str: string): string => {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+};
+
+const matchesSearchQuery = (text: string | undefined | null, query: string): boolean => {
+  if (!query || !query.trim()) return true;
+  if (!text) return false;
+  const q = query.trim().toLowerCase();
+  const t = text.toLowerCase();
+  if (t.includes(q)) return true;
+  return removeVietnameseTones(t).includes(removeVietnameseTones(q));
+};
+
+interface MobileQuickSearchBarProps {
+  searchTerm: string;
+  onSearchChange: (value: string) => void;
+  placeholder?: string;
+  totalCount?: number;
+  filteredCount?: number;
+  darkMode?: boolean;
+}
+
+function MobileQuickSearchBar({
+  searchTerm,
+  onSearchChange,
+  placeholder = 'Tìm nhanh vật tư...',
+  totalCount,
+  filteredCount,
+  darkMode
+}: MobileQuickSearchBarProps) {
+  return (
+    <div 
+      className={`md:hidden fixed bottom-16 left-0 right-0 z-30 px-3 py-2 border-t transition-all backdrop-blur-md ${
+        darkMode 
+          ? 'bg-slate-900/95 border-slate-800 text-white shadow-[0_-4px_20px_rgba(0,0,0,0.4)]' 
+          : 'bg-white/95 border-slate-200 text-slate-900 shadow-[0_-4px_20px_rgba(0,0,0,0.08)]'
+      }`}
+    >
+      <div className="flex items-center gap-2 max-w-lg mx-auto">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder={placeholder}
+            className={`w-full pl-9 pr-8 py-2 text-xs sm:text-sm font-medium rounded-xl border transition-all outline-none focus:ring-2 focus:ring-blue-500 ${
+              darkMode
+                ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+            }`}
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => onSearchChange('')}
+              className={`absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-full transition-colors ${
+                darkMode ? 'text-slate-400 hover:text-white hover:bg-slate-700' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-200'
+              }`}
+              title="Xóa tìm kiếm"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {totalCount !== undefined && filteredCount !== undefined && (
+          <div 
+            className={`shrink-0 px-2 py-1.5 rounded-lg text-[11px] font-mono font-bold flex items-center gap-1 ${
+              searchTerm 
+                ? (darkMode ? 'bg-blue-900/40 text-blue-300 border border-blue-800/60' : 'bg-blue-50 text-blue-700 border border-blue-200')
+                : (darkMode ? 'bg-slate-800 text-slate-400 border border-slate-700' : 'bg-slate-100 text-slate-500 border border-slate-200')
+            }`}
+            title="Số vật tư hiển thị / Tổng số vật tư"
+          >
+            <span>{filteredCount}/{totalCount}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 const normalizeDate = (dateVal: any) => {
   if (!dateVal) return '';
   if (typeof dateVal === 'number') {
@@ -265,6 +371,45 @@ const getWorkingDays = (startDate: Date, endDate: Date, holidays: Holiday[]) => 
     curDate.setDate(curDate.getDate() + 1);
   }
   return count;
+};
+
+// Batch Management Helpers
+const getItemBatches = (item: Item): ItemBatch[] => {
+  if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
+    return item.batches;
+  }
+  if (item.currentStock > 0 || (item.expiryDate && item.expiryDate.trim().length > 0)) {
+    return [{
+      id: 'default',
+      batchNumber: 'Lô mặc định',
+      quantity: Number(item.currentStock) || 0,
+      expiryDate: item.expiryDate || '',
+      note: 'Lô ban đầu'
+    }];
+  }
+  return [];
+};
+
+const syncBatchesToItem = (batches: ItemBatch[]): { currentStock: number; expiryDate: string } => {
+  const currentStock = Number(batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0).toFixed(10));
+  // Earliest expiry date among batches with positive quantity
+  const activeBatchesWithExpiry = batches
+    .filter(b => (Number(b.quantity) || 0) > 0 && b.expiryDate && b.expiryDate.trim().length > 0)
+    .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+
+  let expiryDate = '';
+  if (activeBatchesWithExpiry.length > 0) {
+    expiryDate = activeBatchesWithExpiry[0].expiryDate;
+  } else {
+    const anyBatchWithExpiry = batches
+      .filter(b => b.expiryDate && b.expiryDate.trim().length > 0)
+      .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+    if (anyBatchWithExpiry.length > 0) {
+      expiryDate = anyBatchWithExpiry[0].expiryDate;
+    }
+  }
+
+  return { currentStock, expiryDate };
 };
 
 // --- Components ---
@@ -332,7 +477,24 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
+  const [theme, setTheme] = useState<'medical' | 'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('theme_mode');
+    if (saved === 'medical' || saved === 'light' || saved === 'dark') {
+      return saved as 'medical' | 'light' | 'dark';
+    }
+    const legacy = localStorage.getItem('theme');
+    if (legacy === 'dark') return 'dark';
+    if (legacy === 'light') return 'light';
+    return 'medical';
+  });
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
+
+  const darkMode = theme === 'dark';
+  const isMedical = theme === 'medical';
+  const setDarkMode = (val: boolean) => {
+    setTheme(val ? 'dark' : 'medical');
+  };
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
@@ -353,6 +515,9 @@ export default function App() {
     const handleClickOutside = (event: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
         setShowSearchResults(false);
+      }
+      if (themeMenuRef.current && !themeMenuRef.current.contains(event.target as Node)) {
+        setShowThemeMenu(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -377,14 +542,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (darkMode) {
+    document.documentElement.classList.remove('dark', 'theme-medical');
+    document.documentElement.removeAttribute('data-theme');
+
+    if (theme === 'dark') {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else if (theme === 'medical') {
+      document.documentElement.classList.add('theme-medical');
+      document.documentElement.setAttribute('data-theme', 'medical');
     } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
+      document.documentElement.setAttribute('data-theme', 'light');
     }
-  }, [darkMode]);
+    localStorage.setItem('theme_mode', theme);
+    localStorage.setItem('theme', theme === 'dark' ? 'dark' : 'light');
+  }, [theme]);
 
   const handleResetData = async () => {
     if (user?.email !== 'manhha2@gmail.com') {
@@ -575,24 +747,63 @@ export default function App() {
   if (!user) {
     return (
       <ErrorBoundary>
-        <div className={`h-screen w-screen flex flex-col items-center justify-center p-4 ${darkMode ? 'bg-slate-900' : 'bg-slate-50'}`}>
+        <div className={`h-screen w-screen flex flex-col items-center justify-center p-4 relative ${
+          darkMode ? 'bg-slate-900' : isMedical ? 'bg-[#f0f6fc]' : 'bg-slate-50'
+        }`}>
           <Toaster position="top-right" richColors />
-          <div className={`max-w-md w-full rounded-2xl shadow-xl p-8 text-center border ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
-            <div className="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-200">
-              <Package className="w-10 h-10 text-white" />
+
+          {/* Quick theme selector on login screen */}
+          <div className="absolute top-4 right-4">
+            <button 
+              onClick={() => {
+                const nextTheme = theme === 'medical' ? 'light' : theme === 'light' ? 'dark' : 'medical';
+                setTheme(nextTheme);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                darkMode ? 'bg-slate-800 border-slate-700 text-amber-300' :
+                isMedical ? 'bg-white border-blue-200 text-blue-700 shadow-sm' :
+                'bg-white border-slate-200 text-slate-700 shadow-sm'
+              }`}
+              title="Nhấn để đổi chủ đề giao diện"
+            >
+              <span>{theme === 'medical' ? '🏥 Chuẩn Y Tế' : theme === 'dark' ? '🌙 Giao diện Tối' : '☀️ Giao diện Sáng'}</span>
+            </button>
+          </div>
+
+          <div className={`max-w-md w-full rounded-3xl shadow-xl p-8 text-center border transition-all ${
+            darkMode ? 'bg-slate-800 border-slate-700' : 
+            isMedical ? 'bg-white border-blue-100 shadow-[0_12px_40px_rgba(26,86,219,0.08)]' : 
+            'bg-white border-slate-100 shadow-lg'
+          }`}>
+            <div 
+              style={{ backgroundColor: '#1a56db' }}
+              className="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-200 text-3xl"
+            >
+              🏥
             </div>
-            <h1 className={`text-3xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>Vật tư X Quang</h1>
-            <p className={`mb-8 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Hệ thống quản lý vật tư y tế thông minh tích hợp AI dành cho khoa Chẩn đoán hình ảnh.</p>
+
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 mb-3">
+              <span>Bệnh Viện · Khoa Chẩn Đoán Hình Ảnh</span>
+            </div>
+
+            <h1 className={`text-2xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+              Quản Lý Vật Tư Y Tế
+            </h1>
+            <p className={`text-sm mb-7 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              Cổng thông tin nội bộ quản lý kho vật tư tiêu hao, phim, hóa chất & dược chẩn đoán hình ảnh.
+            </p>
+
             <button 
               onClick={handleLogin}
-              className="w-full py-4 px-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-100 active:scale-95"
+              style={{ backgroundColor: '#1a56db', color: '#ffffff' }}
+              className="w-full py-4 px-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-100 active:scale-95 cursor-pointer"
             >
-              <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-              Đăng nhập với Google
+              <img src="https://www.google.com/favicon.ico" className="w-5 h-5 shrink-0" alt="Google" />
+              <span>Đăng nhập với Google</span>
             </button>
             <div className={`mt-4 flex items-center justify-center gap-2 text-xs ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>
-              <AlertCircle className="w-4 h-4" />
-              <span>Chỉ những tài khoản Google đã được Quản trị viên phê duyệt mới được phép truy cập.</span>
+              <AlertCircle className="w-4 h-4 shrink-0 text-blue-500" />
+              <span>Chỉ tài khoản Google được Quản trị viên duyệt mới được truy cập.</span>
             </div>
           </div>
         </div>
@@ -646,6 +857,7 @@ export default function App() {
 
             <button
               onClick={handleLogout}
+              style={{ backgroundColor: '#1e293b', color: '#ffffff' }}
               className="w-full py-3.5 px-6 bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
@@ -659,7 +871,10 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className={`h-screen overflow-hidden flex ${darkMode ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+      <div className={`h-screen overflow-hidden flex ${
+        darkMode ? 'bg-slate-900 text-slate-100' : 
+        isMedical ? 'bg-[#f0f6fc] text-slate-900' : 'bg-slate-50 text-slate-900'
+      }`}>
       <Toaster position="top-right" richColors />
       
       {/* Mobile Sidebar Overlay */}
@@ -675,21 +890,41 @@ export default function App() {
         fixed inset-y-0 left-0 z-50 w-64 h-screen shrink-0 border-r transform transition-transform duration-300 ease-in-out
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         lg:translate-x-0 lg:sticky lg:top-0
-        ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}
+        ${darkMode ? 'bg-slate-800 border-slate-700' : 
+          isMedical ? 'bg-white border-blue-100 shadow-[2px_0_12px_rgba(26,86,219,0.04)]' : 'bg-white border-slate-200'}
       `}>
         <div className="h-full flex flex-col overflow-hidden">
-          <div className={`p-6 flex items-center justify-between border-b shrink-0 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-md">
-                <Package className="w-6 h-6 text-white" />
+          <div className={`p-5 flex items-center justify-between border-b shrink-0 ${
+            darkMode ? 'border-slate-700 bg-slate-800' : 
+            isMedical ? 'bg-gradient-to-r from-blue-700 to-sky-700 text-white border-blue-800' : 
+            'border-slate-100 bg-white'
+          }`}>
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 ${
+                isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
+              }`}>
+                {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
               </div>
-              <span className={`font-bold text-xl ${darkMode ? 'text-white' : 'text-slate-900'}`}>Vật tư X Quang</span>
+              <div className="min-w-0">
+                <span className={`font-bold text-base block truncate ${darkMode || isMedical ? 'text-white' : 'text-slate-900'}`}>
+                  Vật tư X Quang
+                </span>
+                <span className={`text-[10px] font-semibold tracking-wide uppercase block truncate ${
+                  darkMode ? 'text-slate-400' : isMedical ? 'text-blue-100' : 'text-slate-500'
+                }`}>
+                  Khoa Chẩn Đoán Hình Ảnh
+                </span>
+              </div>
             </div>
             <button 
               onClick={() => setSidebarOpen(false)} 
-              className={`lg:hidden p-1 rounded-lg transition-colors ${darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'}`}
+              className={`lg:hidden p-1 rounded-lg transition-colors ${
+                darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
+                isMedical ? 'text-white/80 hover:bg-white/10 hover:text-white' : 
+                'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+              }`}
             >
-              <X className="w-6 h-6" />
+              <X className="w-5 h-5" />
             </button>
           </div>
 
@@ -700,6 +935,7 @@ export default function App() {
               active={activeTab === 'dashboard'} 
               onClick={() => {setActiveTab('dashboard'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<Package />} 
@@ -707,6 +943,7 @@ export default function App() {
               active={activeTab === 'inventory'} 
               onClick={() => {setActiveTab('inventory'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<ArrowLeftRight />} 
@@ -714,6 +951,7 @@ export default function App() {
               active={activeTab === 'transactions'} 
               onClick={() => {setActiveTab('transactions'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<ClipboardCheck />} 
@@ -721,6 +959,7 @@ export default function App() {
               active={activeTab === 'audit'} 
               onClick={() => {setActiveTab('audit'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<CalendarRange />} 
@@ -728,6 +967,7 @@ export default function App() {
               active={activeTab === 'planning'} 
               onClick={() => {setActiveTab('planning'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<FileText />} 
@@ -735,6 +975,7 @@ export default function App() {
               active={activeTab === 'reports'} 
               onClick={() => {setActiveTab('reports'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<Calendar />} 
@@ -742,6 +983,7 @@ export default function App() {
               active={activeTab === 'holidays'} 
               onClick={() => {setActiveTab('holidays'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<FileSpreadsheet className="text-emerald-500" />} 
@@ -749,6 +991,7 @@ export default function App() {
               active={activeTab === 'google-sheets'} 
               onClick={() => {setActiveTab('google-sheets'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             <NavItem 
               icon={<Users className="text-indigo-500" />} 
@@ -756,6 +999,7 @@ export default function App() {
               active={activeTab === 'users'} 
               onClick={() => {setActiveTab('users'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
               badge={pendingUsersCount > 0 ? pendingUsersCount : undefined}
             />
             <NavItem 
@@ -764,6 +1008,7 @@ export default function App() {
               active={activeTab === 'assistant'} 
               onClick={() => {setActiveTab('assistant'); setSidebarOpen(false);}} 
               darkMode={darkMode}
+              isMedical={isMedical}
             />
             
             {user.email === 'manhha2@gmail.com' && (
@@ -795,44 +1040,184 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* Header */}
-        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-3 sm:px-4 lg:px-8 sticky top-0 z-40 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-3 sm:px-4 lg:px-8 sticky top-0 z-40 transition-colors ${
+          darkMode 
+            ? 'bg-slate-800 border-slate-700 text-white' 
+            : isMedical 
+            ? 'bg-gradient-to-r from-blue-700 via-blue-600 to-sky-700 text-white border-blue-800 shadow-sm' 
+            : 'bg-white border-slate-200 text-slate-900'
+        }`}>
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 rounded-xl transition-colors shrink-0 ${darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600'}`}>
+            <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 rounded-xl transition-colors shrink-0 ${
+              darkMode ? 'bg-slate-700 text-slate-300' : 
+              isMedical ? 'bg-white/15 text-white hover:bg-white/25' : 
+              'bg-slate-100 text-slate-600'
+            }`}>
               <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
-            <h2 className={`text-base sm:text-lg font-bold capitalize truncate max-w-[200px] sm:max-w-md ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-              {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
-               activeTab === 'inventory' ? 'Quản lý Vật tư' : 
-               activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
-               activeTab === 'audit' ? 'Kiểm kê kho' :
-               activeTab === 'planning' ? 'Dự trù vật tư' :
-               activeTab === 'reports' ? 'Báo cáo thống kê' : 
-               activeTab === 'holidays' ? 'Quản lý ngày nghỉ' : 
-               activeTab === 'google-sheets' ? 'Mẫu & Đồng bộ Google Sheets' :
-               activeTab === 'users' ? 'Người dùng & Cán bộ' : 'Trợ lý AI Gemini'}
-            </h2>
+            <div className="flex items-center gap-2 min-w-0">
+              {isMedical && (
+                <span className="hidden sm:inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white/20 text-white text-sm shadow-inner shrink-0" title="Cổng thông tin Y tế Chính thức">
+                  🏥
+                </span>
+              )}
+              <h2 className={`text-base sm:text-lg font-bold capitalize truncate max-w-[200px] sm:max-w-md ${
+                darkMode || isMedical ? 'text-white' : 'text-slate-900'
+              }`}>
+                {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
+                 activeTab === 'inventory' ? 'Quản lý Vật tư' : 
+                 activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
+                 activeTab === 'audit' ? 'Kiểm kê kho' :
+                 activeTab === 'planning' ? 'Dự trù vật tư' :
+                 activeTab === 'reports' ? 'Báo cáo thống kê' : 
+                 activeTab === 'holidays' ? 'Quản lý ngày nghỉ' : 
+                 activeTab === 'google-sheets' ? 'Mẫu & Đồng bộ Google Sheets' :
+                 activeTab === 'users' ? 'Người dùng & Cán bộ' : 'Trợ lý AI Gemini'}
+              </h2>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <button
               onClick={() => setActiveTab('google-sheets')}
               className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                 activeTab === 'google-sheets'
-                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
-                  : (darkMode ? 'bg-slate-800 border-slate-700 text-emerald-400 hover:bg-slate-700' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
+                  ? (isMedical ? 'bg-white text-emerald-700 font-bold shadow-md border-white' : 'bg-emerald-600 text-white border-emerald-600 shadow-sm')
+                  : (darkMode 
+                      ? 'bg-slate-800 border-slate-700 text-emerald-400 hover:bg-slate-700' 
+                      : isMedical
+                      ? 'bg-white/15 border-white/25 text-white hover:bg-white/25'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
               }`}
               title="Mở Trung tâm Mẫu & Đồng bộ Google Sheets"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+              <FileSpreadsheet className={`w-3.5 h-3.5 ${isMedical && activeTab !== 'google-sheets' ? 'text-emerald-300' : 'text-emerald-500'}`} />
               <span>Mẫu Google Sheets CĐHA</span>
             </button>
-            <button 
-              onClick={() => setDarkMode(!darkMode)}
-              className={`p-2 rounded-lg transition-colors ${darkMode ? 'bg-slate-700 text-amber-400 hover:bg-slate-600' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-            >
-              {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-            </button>
+
+            {/* Theme Selector Popover */}
+            <div className="relative" ref={themeMenuRef}>
+              <button 
+                onClick={() => setShowThemeMenu(!showThemeMenu)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                  isMedical 
+                    ? 'bg-white/20 hover:bg-white/30 text-white border-white/30 shadow-sm' 
+                    : darkMode 
+                    ? 'bg-slate-700 border-slate-600 text-amber-300 hover:bg-slate-600' 
+                    : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                }`}
+                title="Đổi chủ đề giao diện (Chuẩn Y Tế / Sáng / Tối)"
+              >
+                {theme === 'medical' ? (
+                  <>
+                    <span className="text-sm">🏥</span>
+                    <span className="hidden sm:inline">Chuẩn Y Tế</span>
+                  </>
+                ) : theme === 'dark' ? (
+                  <>
+                    <Moon className="w-3.5 h-3.5 text-amber-300" />
+                    <span className="hidden sm:inline">Giao diện Tối</span>
+                  </>
+                ) : (
+                  <>
+                    <Sun className="w-3.5 h-3.5 text-amber-500" />
+                    <span className="hidden sm:inline">Giao diện Sáng</span>
+                  </>
+                )}
+                <ChevronDown className="w-3 h-3 opacity-70 ml-0.5" />
+              </button>
+
+              {showThemeMenu && (
+                <div className={`absolute right-0 mt-2 w-72 rounded-2xl shadow-2xl border p-2 z-50 text-left ${
+                  darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+                }`}>
+                  <div className={`px-3 py-2 text-[10px] font-bold uppercase tracking-wider border-b ${
+                    darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-400 border-slate-100'
+                  }`}>
+                    Chọn giao diện hệ thống
+                  </div>
+                  
+                  {/* Option 1: Chuẩn Y Tế (Mặc định) */}
+                  <button
+                    onClick={() => {
+                      setTheme('medical');
+                      setShowThemeMenu(false);
+                    }}
+                    className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
+                      theme === 'medical'
+                        ? (darkMode ? 'bg-blue-900/40 text-blue-300 border border-blue-700/60' : 'bg-blue-50 text-blue-900 border border-blue-200')
+                        : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-sky-500 text-white flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
+                      🏥
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-bold">Chuẩn Y Tế</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded-md font-bold bg-blue-600 text-white">Mặc định</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                        Xanh & Trắng chuẩn website y tế chính thức, giao diện bệnh viện
+                      </p>
+                    </div>
+                    {theme === 'medical' && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-1" />}
+                  </button>
+
+                  {/* Option 2: Giao diện Sáng */}
+                  <button
+                    onClick={() => {
+                      setTheme('light');
+                      setShowThemeMenu(false);
+                    }}
+                    className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
+                      theme === 'light'
+                        ? (darkMode ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-900 border border-slate-300')
+                        : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-600 border border-amber-200 flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
+                      <Sun className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-bold block">Giao diện Sáng (Light)</span>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                        Tone xám sáng trung tính tiêu chuẩn
+                      </p>
+                    </div>
+                    {theme === 'light' && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-1" />}
+                  </button>
+
+                  {/* Option 3: Giao diện Tối */}
+                  <button
+                    onClick={() => {
+                      setTheme('dark');
+                      setShowThemeMenu(false);
+                    }}
+                    className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
+                      theme === 'dark'
+                        ? 'bg-slate-700 text-white border border-slate-600'
+                        : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-slate-900 text-amber-300 border border-slate-700 flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
+                      <Moon className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-bold block">Giao diện Tối (Dark)</span>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                        Tối ưu cho phòng đọc phim X-Quang & làm việc ban đêm
+                      </p>
+                    </div>
+                    {theme === 'dark' && <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0 mt-1" />}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div className="relative hidden sm:block" ref={searchRef}>
-              <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 ${darkMode ? 'text-slate-500' : 'text-slate-400'}`} />
+              <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 ${
+                isMedical ? 'text-blue-200' : darkMode ? 'text-slate-500' : 'text-slate-400'
+              }`} />
               <input 
                 type="text" 
                 placeholder="Tìm kiếm vật tư..." 
@@ -848,7 +1233,13 @@ export default function App() {
                     setShowSearchResults(false);
                   }
                 }}
-                className={`pl-10 pr-10 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 w-64 border-none ${darkMode ? 'bg-slate-700 text-white placeholder-slate-500' : 'bg-slate-100 text-slate-900 placeholder-slate-400'}`}
+                className={`pl-10 pr-10 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 w-64 border-none transition-all ${
+                  isMedical
+                    ? 'bg-white/15 text-white placeholder-blue-100 focus:bg-white focus:text-slate-900 focus:placeholder-slate-400'
+                    : darkMode 
+                    ? 'bg-slate-700 text-white placeholder-slate-500' 
+                    : 'bg-slate-100 text-slate-900 placeholder-slate-400'
+                }`}
               />
               {globalSearch && (
                 <button 
@@ -856,7 +1247,9 @@ export default function App() {
                     setGlobalSearch('');
                     setShowSearchResults(false);
                   }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className={`absolute right-3 top-1/2 -translate-y-1/2 ${
+                    isMedical ? 'text-blue-100 hover:text-white' : 'text-slate-400 hover:text-slate-600'
+                  }`}
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -908,7 +1301,7 @@ export default function App() {
         </header>
 
         {/* Scrollable Area */}
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-8 pb-24 md:pb-8">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-8 pb-36 md:pb-8">
           {activeTab === 'dashboard' && (
             <Dashboard 
               items={items} 
@@ -958,8 +1351,12 @@ export default function App() {
         </div>
 
         {/* Mobile Bottom Navigation Bar (< md) */}
-        <nav className={`md:hidden shrink-0 border-t flex items-center justify-around h-16 px-1 safe-area-pb z-40 ${
-          darkMode ? 'bg-slate-900/95 border-slate-800 text-slate-400' : 'bg-white/95 border-slate-200 text-slate-600'
+        <nav className={`md:hidden shrink-0 border-t flex items-center justify-around h-16 px-1 safe-area-pb z-40 transition-colors ${
+          darkMode 
+            ? 'bg-slate-900/95 border-slate-800 text-slate-400' 
+            : isMedical
+            ? 'bg-white/95 border-blue-200/80 text-slate-600 shadow-[0_-4px_16px_rgba(26,86,219,0.06)]'
+            : 'bg-white/95 border-slate-200 text-slate-600'
         }`}>
           <button
             type="button"
@@ -1060,23 +1457,33 @@ export default function App() {
 
 // --- Sub-components ---
 
-function NavItem({ icon, label, active, onClick, darkMode, badge }: { icon: any, label: string, active: boolean, onClick: () => void, darkMode?: boolean, badge?: number }) {
+function NavItem({ icon, label, active, onClick, darkMode, isMedical, badge }: { icon: any, label: string, active: boolean, onClick: () => void, darkMode?: boolean, isMedical?: boolean, badge?: number }) {
   return (
     <button 
       onClick={onClick}
       className={`
         w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl transition-all
         ${active 
-          ? (darkMode ? 'bg-blue-900/30 text-blue-400 font-semibold' : 'bg-blue-50 text-blue-600 font-semibold shadow-sm') 
-          : (darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-100' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900')}
+          ? (darkMode 
+              ? 'bg-blue-900/30 text-blue-400 font-semibold' 
+              : isMedical
+              ? 'bg-blue-600 text-white font-bold shadow-md shadow-blue-200/50'
+              : 'bg-blue-50 text-blue-600 font-semibold shadow-sm') 
+          : (darkMode 
+              ? 'text-slate-400 hover:bg-slate-700 hover:text-slate-100' 
+              : isMedical
+              ? 'text-slate-600 hover:bg-blue-50/80 hover:text-blue-700 font-medium'
+              : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900')}
       `}
     >
       <div className="flex items-center gap-3 min-w-0">
-        {React.cloneElement(icon, { className: 'w-5 h-5 shrink-0' })}
+        {React.cloneElement(icon, { className: `w-5 h-5 shrink-0 ${active && isMedical ? 'text-white' : ''}` })}
         <span className="truncate">{label}</span>
       </div>
       {badge && badge > 0 ? (
-        <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-amber-500 text-white shrink-0">
+        <span className={`px-2 py-0.5 text-[11px] font-bold rounded-full shrink-0 ${
+          active && isMedical ? 'bg-white text-blue-700' : 'bg-amber-500 text-white'
+        }`}>
           {badge}
         </span>
       ) : null}
@@ -1407,13 +1814,6 @@ function Dashboard({
                 label="Nhập Excel" 
                 color="amber" 
                 onClick={() => setActiveTab('inventory')} 
-                darkMode={darkMode}
-              />
-              <QuickActionButton 
-                icon={<BrainCircuit />} 
-                label="Trợ lý AI" 
-                color="pink" 
-                onClick={() => setActiveTab('assistant')} 
                 darkMode={darkMode}
               />
             </div>
@@ -1845,6 +2245,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
     manufacturer: '',
     minStock: '0', 
     currentStock: '0', 
+    batchNumber: '',
     expiryDate: '', 
     price: '0',
     note: ''
@@ -1865,6 +2266,119 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
   });
   const [nameSuggestions, setNameSuggestions] = useState<Item[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Lot/Batch Management Modal State
+  const [selectedBatchItem, setSelectedBatchItem] = useState<Item | null>(null);
+  const [currentBatches, setCurrentBatches] = useState<ItemBatch[]>([]);
+  const [newBatchForm, setNewBatchForm] = useState({
+    batchNumber: '',
+    quantity: '',
+    expiryDate: '',
+    importDate: new Date().toISOString().split('T')[0],
+    note: ''
+  });
+  const [isSavingBatches, setIsSavingBatches] = useState(false);
+
+  const handleOpenBatchManager = (item: Item) => {
+    setSelectedBatchItem(item);
+    const existing = getItemBatches(item);
+    setCurrentBatches(existing);
+    setNewBatchForm({
+      batchNumber: `Lô ${new Date().getFullYear()}-${String(existing.length + 1).padStart(2, '0')}`,
+      quantity: '',
+      expiryDate: '',
+      importDate: new Date().toISOString().split('T')[0],
+      note: ''
+    });
+  };
+
+  const handleAddBatchToItem = (e: React.FormEvent) => {
+    e.preventDefault();
+    const qty = parseFloat(newBatchForm.quantity);
+    if (isNaN(qty) || qty <= 0) {
+      toast.error('Số lượng lô phải lớn hơn 0!');
+      return;
+    }
+
+    const exp = newBatchForm.expiryDate.trim();
+    const existingIdx = currentBatches.findIndex(b => (b.expiryDate || '').trim() === exp);
+
+    if (existingIdx >= 0) {
+      const existing = currentBatches[existingIdx];
+      const updatedQty = Number((existing.quantity + qty).toFixed(10));
+      setCurrentBatches(prev => prev.map((b, idx) => idx === existingIdx ? { ...b, quantity: updatedQty } : b));
+      toast.success(`Hạn dùng trùng với "${existing.batchNumber}", đã tự động cộng gộp thêm ${formatQty(qty)}!`);
+    } else {
+      let lotName = newBatchForm.batchNumber.trim();
+      if (!lotName) {
+        const nextNum = currentBatches.length + 1;
+        lotName = `Lô ${String(nextNum).padStart(2, '0')}`;
+        let ctr = nextNum;
+        while (currentBatches.some(b => b.batchNumber.trim().toLowerCase() === lotName.toLowerCase())) {
+          ctr++;
+          lotName = `Lô ${String(ctr).padStart(2, '0')}`;
+        }
+      }
+
+      const newBatch: ItemBatch = {
+        id: `batch-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        batchNumber: lotName,
+        quantity: Number(qty.toFixed(10)),
+        expiryDate: exp,
+        importDate: newBatchForm.importDate || new Date().toISOString().split('T')[0],
+        note: newBatchForm.note.trim()
+      };
+
+      setCurrentBatches(prev => [...prev, newBatch]);
+      toast.success(`Đã tự động tạo mới "${lotName}" (${formatQty(qty)})!`);
+    }
+
+    setNewBatchForm({
+      batchNumber: '',
+      quantity: '',
+      expiryDate: '',
+      importDate: new Date().toISOString().split('T')[0],
+      note: ''
+    });
+  };
+
+  const handleUpdateBatchQuantity = (batchId: string, newQtyStr: string) => {
+    const qty = parseFloat(newQtyStr);
+    if (isNaN(qty) || qty < 0) return;
+    setCurrentBatches(prev => prev.map(b => b.id === batchId ? { ...b, quantity: Number(qty.toFixed(10)) } : b));
+  };
+
+  const handleUpdateBatchExpiry = (batchId: string, newExpiry: string) => {
+    setCurrentBatches(prev => prev.map(b => b.id === batchId ? { ...b, expiryDate: newExpiry } : b));
+  };
+
+  const handleUpdateBatchNumber = (batchId: string, newNumber: string) => {
+    setCurrentBatches(prev => prev.map(b => b.id === batchId ? { ...b, batchNumber: newNumber } : b));
+  };
+
+  const handleDeleteBatch = (batchId: string) => {
+    setCurrentBatches(prev => prev.filter(b => b.id !== batchId));
+  };
+
+  const handleSaveBatchesToFirestore = async () => {
+    if (!selectedBatchItem) return;
+    setIsSavingBatches(true);
+    try {
+      const { currentStock, expiryDate } = syncBatchesToItem(currentBatches);
+      await updateDoc(doc(db, "items", selectedBatchItem.id), {
+        batches: currentBatches,
+        currentStock,
+        expiryDate
+      });
+      toast.success(`Đã lưu ${currentBatches.length} lô! Tồn kho đồng bộ thành: ${formatQty(currentStock)} ${selectedBatchItem.unit}`);
+      setSelectedBatchItem(null);
+    } catch (err) {
+      toast.error('Lỗi khi lưu thông tin lô');
+      handleFirestoreError(err, OperationType.UPDATE, `items/${selectedBatchItem.id}`);
+    } finally {
+      setIsSavingBatches(false);
+    }
+  };
 
   useEffect(() => {
     if (newItem.name.trim().length > 0 && showAdd) {
@@ -1891,6 +2405,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
       manufacturer: item.manufacturer || '',
       minStock: item.minStock.toString(),
       currentStock: item.currentStock.toString(),
+      batchNumber: item.batches?.[0]?.batchNumber || '',
       expiryDate: item.expiryDate || '',
       price: (item.price || 0).toString(),
       note: item.note || ''
@@ -1915,6 +2430,8 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
     const data = filteredAndSortedItems.map((item, idx) => {
       const cat = categories.find(c => c.id === item.categoryId);
       const dept = departments.find(d => d.id === item.departmentId);
+      const batches = getItemBatches(item);
+      const batchSummary = batches.map(b => `${b.batchNumber}: ${formatQty(b.quantity)} (HSD: ${b.expiryDate || 'N/A'})`).join('; ');
       return {
         'MaVatTu': item.code || `VT-${String(idx + 1).padStart(3, '0')}`,
         'TenVatTu': item.name,
@@ -1924,6 +2441,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
         'HangSanXuat': item.manufacturer || '',
         'TonToiThieu': item.minStock,
         'TonHienTai': item.currentStock,
+        'CacLoChiTiet': batchSummary || 'Không có lô',
         'DonGia': item.price || 0,
         'HanSuDung': item.expiryDate || '',
         'MaPhongBan': dept?.name || '-',
@@ -1933,7 +2451,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
     const ws = XLSX.utils.json_to_sheet(data);
     ws['!cols'] = [
       { wch: 14 }, { wch: 40 }, { wch: 14 }, { wch: 12 }, { wch: 25 },
-      { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
+      { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 35 }, { wch: 14 }, { wch: 14 },
       { wch: 18 }, { wch: 35 }
     ];
     const wb = XLSX.utils.book_new();
@@ -1949,11 +2467,30 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
       const currentStock = parseFloat(newItem.currentStock) || 0;
       const price = parseFloat(newItem.price) || 0;
 
+      const initialBatchNumber = newItem.batchNumber.trim() || 'Lô 01';
+      const initialBatches: ItemBatch[] = (currentStock > 0 || newItem.expiryDate) ? [{
+        id: `batch-${Date.now()}`,
+        batchNumber: initialBatchNumber,
+        quantity: currentStock,
+        expiryDate: newItem.expiryDate || '',
+        importDate: new Date().toISOString().split('T')[0],
+        note: 'Lô tạo khi thêm mới'
+      }] : [];
+
       const itemRef = await addDoc(collection(db, "items"), {
-        ...newItem,
+        name: newItem.name,
+        code: newItem.code,
+        categoryId: newItem.categoryId,
+        departmentId: newItem.departmentId,
+        unit: newItem.unit,
+        specification: newItem.specification,
+        manufacturer: newItem.manufacturer,
         minStock,
         currentStock,
+        expiryDate: newItem.expiryDate,
         price,
+        note: newItem.note,
+        batches: initialBatches,
         createdAt: serverTimestamp()
       });
 
@@ -1966,6 +2503,8 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
           quantity: currentStock,
           unitPrice: price,
           totalAmount: currentStock * price,
+          batchNumber: initialBatchNumber,
+          batchExpiry: newItem.expiryDate,
           toDeptId: newItem.departmentId,
           timestamp: serverTimestamp(),
           note: 'Nhập kho ban đầu'
@@ -1983,6 +2522,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
         manufacturer: '',
         minStock: '0', 
         currentStock: '0', 
+        batchNumber: '',
         expiryDate: '', 
         price: '0',
         note: ''
@@ -2198,8 +2738,15 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
   const filteredAndSortedItems = useMemo(() => {
     return items
       .filter(item => {
-        const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) && 
-                             item.name.toLowerCase().includes(globalSearch.toLowerCase());
+        const matchesSearch = (
+          matchesSearchQuery(item.name, searchTerm) ||
+          matchesSearchQuery(item.code, searchTerm) ||
+          matchesSearchQuery(item.specification, searchTerm) ||
+          matchesSearchQuery(item.manufacturer, searchTerm)
+        ) && (
+          matchesSearchQuery(item.name, globalSearch) ||
+          matchesSearchQuery(item.code, globalSearch)
+        );
         
         let matchesCategory = true;
         if (filterCategoryName !== '') {
@@ -2319,7 +2866,8 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
           </div>
           
           <div className="flex items-center gap-2 w-full lg:w-auto justify-end">
-            <div className={`flex items-center p-1 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+            {/* Hidden on mobile to keep interface clean; visible on tablet/desktop */}
+            <div className={`hidden sm:flex items-center p-1 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
               <input 
                 type="file" 
                 accept=".xlsx, .xls" 
@@ -2347,15 +2895,15 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
             {selectedIds.length > 0 && (
               <button 
                 onClick={() => setShowDeleteConfirm(true)}
-                className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${darkMode ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}
+                className={`flex-1 sm:flex-none justify-center px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${darkMode ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}
               >
-                <Trash2 className="w-4 h-4" /> <span className="hidden sm:inline">Xóa</span> ({selectedIds.length})
+                <Trash2 className="w-4 h-4" /> <span>Xóa ({selectedIds.length})</span>
               </button>
             )}
             
             <button 
               onClick={() => setShowAdd(true)}
-              className="px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 active:scale-95"
+              className="w-full sm:w-auto justify-center px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 active:scale-95 cursor-pointer"
             >
               <Plus className="w-4 h-4" /> <span>Thêm vật tư</span>
             </button>
@@ -2558,7 +3106,22 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 {/* Footer card: Tồn kho thực tế nổi bật & đơn giá */}
                 <div className={`pt-2.5 mt-1 border-t flex items-center justify-between ${darkMode ? 'border-slate-700/60' : 'border-slate-100'}`}>
                   <div>
-                    <span className="text-[11px] text-slate-400 uppercase font-semibold">Tồn kho hiện tại:</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-400 uppercase font-semibold">Tồn kho hiện tại:</span>
+                      <button 
+                        type="button"
+                        onClick={() => handleOpenBatchManager(item)}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors cursor-pointer ${
+                          darkMode 
+                            ? 'bg-purple-950/50 text-purple-300 border-purple-800/60 hover:bg-purple-900/60' 
+                            : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                        }`}
+                        title="Bấm để xem và quản lý chi tiết từng lô"
+                      >
+                        <Layers className="w-3 h-3 text-purple-500" />
+                        <span>{getItemBatches(item).length} lô</span>
+                      </button>
+                    </div>
                     <div className="flex items-baseline gap-1 mt-0.5">
                       <span className={`text-lg font-black ${isLow ? 'text-amber-500 dark:text-amber-400' : (darkMode ? 'text-white' : 'text-slate-900')}`}>
                         {formatQty(item.currentStock)}
@@ -2693,9 +3256,35 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                     </td>
                     <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{item.unit}</td>
                     <td className={`px-6 py-4 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{(item.price || 0).toLocaleString('vi-VN')} đ</td>
-                    <td className={`px-6 py-4 font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{formatQty(item.currentStock)}</td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-col">
+                        <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {formatQty(item.currentStock)} {item.unit}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenBatchManager(item)}
+                          className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border transition-all w-fit cursor-pointer ${
+                            darkMode 
+                              ? 'bg-purple-950/40 text-purple-300 border-purple-800/60 hover:bg-purple-900/60' 
+                              : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                          }`}
+                          title="Bấm để xem và quản lý chi tiết từng lô"
+                        >
+                          <Layers className="w-3 h-3 text-purple-500" />
+                          <span>{getItemBatches(item).length} lô</span>
+                        </button>
+                      </div>
+                    </td>
                     <td className={`px-6 py-4 font-medium ${isExpired ? 'text-red-600' : isNearingExpiry ? 'text-orange-600' : (darkMode ? 'text-slate-400' : 'text-slate-500')}`}>
-                      {formatDate(item.expiryDate)}
+                      <div>
+                        <span>{formatDate(item.expiryDate)}</span>
+                        {getItemBatches(item).length > 1 && (
+                          <span className="block text-[10px] text-slate-400 dark:text-slate-500 font-normal">
+                            (Lô hạn gần nhất)
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-center">
                       <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase whitespace-nowrap border ${
@@ -2836,13 +3425,17 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Đơn giá (VNĐ)</label>
                   <input type="number" step="any" className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} value={newItem.price} onChange={e => setNewItem({...newItem, price: e.target.value})} />
                 </div>
                 <div>
-                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Hạn sử dụng</label>
+                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Số lô ban đầu</label>
+                  <input type="text" placeholder="LO-2026-01" className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900'}`} value={newItem.batchNumber} onChange={e => setNewItem({...newItem, batchNumber: e.target.value})} />
+                </div>
+                <div>
+                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Hạn dùng của lô</label>
                   <input type="date" className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} value={newItem.expiryDate} onChange={e => setNewItem({...newItem, expiryDate: e.target.value})} />
                 </div>
               </div>
@@ -2868,7 +3461,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
         </div>
       )}
 
-      {showEdit && (
+      {showEdit && editingItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className={`rounded-3xl shadow-2xl w-full max-w-lg p-6 sm:p-8 border max-h-[90vh] overflow-y-auto ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
             <div className="flex justify-between items-center mb-6">
@@ -2886,7 +3479,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                     type="text" 
                     className={`w-full px-3 py-2 border rounded-xl font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
                     value={editForm.code} 
-                    onChange={e => setEditForm({...editForm, code: e.target.value})}
+                    onChange={e => setEditForm({...editForm, code: e.target.value})} 
                   />
                 </div>
                 <div className="col-span-2">
@@ -2896,7 +3489,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                     type="text" 
                     className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
                     value={editForm.name} 
-                    onChange={e => setEditForm({...editForm, name: e.target.value})}
+                    onChange={e => setEditForm({...editForm, name: e.target.value})} 
                   />
                 </div>
               </div>
@@ -2958,6 +3551,36 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 </div>
               </div>
 
+              {/* Direct Lot/Batch link from Edit Modal */}
+              <div className={`p-3.5 rounded-2xl border flex items-center justify-between ${
+                darkMode ? 'bg-purple-950/30 border-purple-800/50' : 'bg-purple-50/70 border-purple-200/80'
+              }`}>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400">
+                    <Layers className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-purple-900 dark:text-purple-200">
+                      Quản lý từng lô & hạn sử dụng ({getItemBatches(editingItem).length} lô)
+                    </p>
+                    <p className="text-[11px] text-purple-700 dark:text-purple-300">
+                      Tổng tồn các lô: {formatQty(editingItem.currentStock)} {editingItem.unit}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const item = editingItem;
+                    setShowEdit(false);
+                    handleOpenBatchManager(item);
+                  }}
+                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                >
+                  Quản lý lô
+                </button>
+              </div>
+
               <div>
                 <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Hạn sử dụng</label>
                 <input type="date" className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} value={editForm.expiryDate} onChange={e => setEditForm({...editForm, expiryDate: e.target.value})} />
@@ -2979,6 +3602,270 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Batch / Lot Management Modal */}
+      {selectedBatchItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className={`rounded-3xl shadow-2xl w-full max-w-2xl p-6 sm:p-8 border max-h-[92vh] flex flex-col ${
+            darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+          }`}>
+            {/* Modal Header */}
+            <div className="flex justify-between items-start pb-4 border-b border-slate-200 dark:border-slate-700">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400">
+                  <Layers className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold">Quản lý Lô & Hạn sử dụng</h3>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {selectedBatchItem.code && (
+                      <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800">
+                        {selectedBatchItem.code}
+                      </span>
+                    )}
+                    <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      {selectedBatchItem.name}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedBatchItem(null)} 
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body: Scrollable */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-5 pr-1">
+              {/* Summary Stats of all lots */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className={`p-3.5 rounded-xl border ${darkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[11px] uppercase tracking-wider text-slate-400 font-bold block">Tổng số lô</span>
+                  <span className="text-lg font-extrabold text-purple-600 dark:text-purple-400 mt-0.5 block">
+                    {currentBatches.length} lô
+                  </span>
+                </div>
+                <div className={`p-3.5 rounded-xl border ${darkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[11px] uppercase tracking-wider text-slate-400 font-bold block">Tổng tồn các lô</span>
+                  <span className="text-lg font-extrabold text-blue-600 dark:text-blue-400 mt-0.5 block">
+                    {formatQty(currentBatches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0))} {selectedBatchItem.unit}
+                  </span>
+                </div>
+                <div className={`p-3.5 rounded-xl border ${darkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                  <span className="text-[11px] uppercase tracking-wider text-slate-400 font-bold block">Hạn dùng sớm nhất (FEFO)</span>
+                  <span className="text-sm font-extrabold text-amber-600 dark:text-amber-400 mt-1 block">
+                    {syncBatchesToItem(currentBatches).expiryDate ? formatDate(syncBatchesToItem(currentBatches).expiryDate) : 'Chưa có'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Current Batches List */}
+              <div>
+                <div className="flex items-center justify-between mb-2.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Danh sách các lô ({currentBatches.length})
+                  </h4>
+                  <span className="text-[11px] text-slate-400 italic">
+                    Có thể sửa trực tiếp số lượng hoặc hạn dùng của từng lô
+                  </span>
+                </div>
+
+                {currentBatches.length === 0 ? (
+                  <div className={`p-6 text-center rounded-xl border border-dashed ${darkMode ? 'border-slate-700 text-slate-400' : 'border-slate-300 text-slate-500'}`}>
+                    Chưa có lô nào. Hãy thêm lô mới ở bên dưới để phân bổ số lượng tồn kho.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {currentBatches.map((b, index) => {
+                      const isExpired = b.expiryDate && new Date(b.expiryDate) < new Date();
+                      const isNearingExpiry = b.expiryDate && 
+                        (new Date(b.expiryDate).getTime() - new Date().getTime()) < (30 * 24 * 60 * 60 * 1000) &&
+                        (new Date(b.expiryDate).getTime() - new Date().getTime()) > 0;
+
+                      return (
+                        <div 
+                          key={b.id || index}
+                          className={`p-3.5 rounded-xl border transition-all ${
+                            darkMode ? 'bg-slate-700/40 border-slate-600' : 'bg-slate-50 border-slate-200'
+                          }`}
+                        >
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
+                            {/* Mã lô */}
+                            <div className="sm:col-span-4">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                                Số lô / Mã lô
+                              </label>
+                              <div className="flex items-center gap-1.5">
+                                <Tag className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                                <input
+                                  type="text"
+                                  value={b.batchNumber}
+                                  onChange={e => handleUpdateBatchNumber(b.id, e.target.value)}
+                                  className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-semibold focus:ring-2 focus:ring-purple-500 outline-none ${
+                                    darkMode ? 'bg-slate-800 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'
+                                  }`}
+                                  placeholder="Mã số lô..."
+                                />
+                              </div>
+                            </div>
+
+                            {/* Số lượng tồn lô */}
+                            <div className="sm:col-span-3">
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                                Tồn lô ({selectedBatchItem.unit})
+                              </label>
+                              <input
+                                type="number"
+                                step="any"
+                                min="0"
+                                value={b.quantity}
+                                onChange={e => handleUpdateBatchQuantity(b.id, e.target.value)}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-bold text-blue-600 focus:ring-2 focus:ring-blue-500 outline-none ${
+                                  darkMode ? 'bg-slate-800 border-slate-600 text-blue-400' : 'bg-white border-slate-300'
+                                }`}
+                              />
+                            </div>
+
+                            {/* Hạn sử dụng */}
+                            <div className="sm:col-span-4">
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase">
+                                  Hạn dùng
+                                </label>
+                                {b.expiryDate && (
+                                  <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                    isExpired ? 'bg-red-500/20 text-red-500' :
+                                    isNearingExpiry ? 'bg-orange-500/20 text-orange-500' :
+                                    'bg-emerald-500/20 text-emerald-500'
+                                  }`}>
+                                    {isExpired ? 'Hết hạn' : isNearingExpiry ? 'Sắp hết' : 'An toàn'}
+                                  </span>
+                                )}
+                              </div>
+                              <input
+                                type="date"
+                                value={b.expiryDate || ''}
+                                onChange={e => handleUpdateBatchExpiry(b.id, e.target.value)}
+                                className={`w-full px-2 py-1.5 rounded-lg border text-xs focus:ring-2 focus:ring-purple-500 outline-none ${
+                                  darkMode ? 'bg-slate-800 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'
+                                }`}
+                              />
+                            </div>
+
+                            {/* Nút xóa lô */}
+                            <div className="sm:col-span-1 flex justify-end">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteBatch(b.id)}
+                                className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                                title="Xóa lô này"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Form thêm lô mới */}
+              <div className={`p-4 rounded-2xl border ${darkMode ? 'bg-slate-900/50 border-slate-700' : 'bg-purple-50/40 border-purple-100'}`}>
+                <h5 className="text-xs font-bold uppercase tracking-wider text-purple-700 dark:text-purple-300 flex items-center gap-1.5 mb-3">
+                  <Plus className="w-3.5 h-3.5" /> Thêm lô mới cho vật tư này
+                </h5>
+                <form onSubmit={handleAddBatchToItem} className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                  <div className="sm:col-span-4">
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                      Số lô (tùy chọn)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="vd: LO-2026-B (để trống tự sinh)"
+                      value={newBatchForm.batchNumber}
+                      onChange={e => setNewBatchForm({ ...newBatchForm, batchNumber: e.target.value })}
+                      className={`w-full px-3 py-2 rounded-xl border text-xs outline-none focus:ring-2 focus:ring-purple-500 ${
+                        darkMode ? 'bg-slate-800 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900'
+                      }`}
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                      Số lượng *
+                    </label>
+                    <input
+                      required
+                      type="number"
+                      step="any"
+                      min="0"
+                      placeholder="0"
+                      value={newBatchForm.quantity}
+                      onChange={e => setNewBatchForm({ ...newBatchForm, quantity: e.target.value })}
+                      className={`w-full px-3 py-2 rounded-xl border text-xs outline-none focus:ring-2 focus:ring-purple-500 ${
+                        darkMode ? 'bg-slate-800 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900'
+                      }`}
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                      Hạn sử dụng
+                    </label>
+                    <input
+                      type="date"
+                      value={newBatchForm.expiryDate}
+                      onChange={e => setNewBatchForm({ ...newBatchForm, expiryDate: e.target.value })}
+                      className={`w-full px-2.5 py-2 rounded-xl border text-xs outline-none focus:ring-2 focus:ring-purple-500 ${
+                        darkMode ? 'bg-slate-800 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'
+                      }`}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <button
+                      type="submit"
+                      className="w-full py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-purple-500/20 cursor-pointer flex items-center justify-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Thêm lô
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedBatchItem(null)}
+                className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-colors ${
+                  darkMode ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveBatchesToFirestore}
+                disabled={isSavingBatches}
+                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-blue-500/20 flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isSavingBatches ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" /> Đang đồng bộ...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" /> Lưu cập nhật & Đồng bộ tồn kho
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3008,13 +3895,33 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
           </div>
         </div>
       )}
+
+      {/* Mobile Sticky Quick Search Bar (docked directly above bottom nav) */}
+      <MobileQuickSearchBar 
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
+        placeholder="🔍 Tìm nhanh vật tư (tên, mã, quy cách)..."
+        totalCount={items.length}
+        filteredCount={filteredAndSortedItems.length}
+        darkMode={darkMode}
+      />
     </div>
   );
 }
 
 function Transactions({ transactions, items, departments, categories, globalSearch, darkMode }: { transactions: Transaction[], items: Item[], departments: Department[], categories: Category[], globalSearch: string, darkMode?: boolean }) {
   const [showAdd, setShowAdd] = useState(false);
-  const [newTrans, setNewTrans] = useState({ itemId: '', type: 'OUT' as any, quantity: '0', fromDeptId: '', toDeptId: '', note: '' });
+  const [newTrans, setNewTrans] = useState({ 
+    itemId: '', 
+    type: 'OUT' as any, 
+    quantity: '0', 
+    fromDeptId: '', 
+    toDeptId: '', 
+    batchId: '', 
+    batchNumber: '', 
+    batchExpiry: '', 
+    note: '' 
+  });
   const [itemSearchTerm, setItemSearchTerm] = useState('');
   const [itemSuggestions, setItemSuggestions] = useState<Item[]>([]);
   const [showItemSuggestions, setShowItemSuggestions] = useState(false);
@@ -3080,7 +3987,17 @@ function Transactions({ transactions, items, departments, categories, globalSear
   }, [itemSearchTerm, items, showAdd]);
 
   const handleSelectItem = (item: Item) => {
-    setNewTrans({ ...newTrans, itemId: item.id });
+    const itemBatches = getItemBatches(item);
+    const activeBatches = itemBatches.filter(b => (Number(b.quantity) || 0) > 0);
+    const earliestBatch = activeBatches.sort((a, b) => (a.expiryDate || '9999').localeCompare(b.expiryDate || '9999'))[0];
+
+    setNewTrans(prev => ({
+      ...prev,
+      itemId: item.id,
+      batchId: earliestBatch ? earliestBatch.id : (itemBatches[0]?.id || ''),
+      batchNumber: earliestBatch ? earliestBatch.batchNumber : (itemBatches[0]?.batchNumber || ''),
+      batchExpiry: earliestBatch ? earliestBatch.expiryDate : (itemBatches[0]?.expiryDate || '')
+    }));
     setItemSearchTerm(item.name);
     setShowItemSuggestions(false);
   };
@@ -3088,29 +4005,149 @@ function Transactions({ transactions, items, departments, categories, globalSear
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     const item = items.find(i => i.id === newTrans.itemId);
-    if (!item) return;
+    if (!item) {
+      toast.error('Vui lòng chọn vật tư!');
+      return;
+    }
 
     const quantity = Number(parseFloat(newTrans.quantity).toFixed(10)) || 0;
-    let newStock = item.currentStock;
-    if (newTrans.type === 'IN') newStock += quantity;
-    if (newTrans.type === 'OUT' || newTrans.type === 'TRANSFER') newStock -= quantity;
-    
-    newStock = Number(newStock.toFixed(10));
+    if (quantity <= 0) {
+      toast.error('Số lượng giao dịch phải lớn hơn 0!');
+      return;
+    }
+
+    let batches = [...getItemBatches(item)];
+    let recordedBatchNumber = newTrans.batchNumber.trim();
+    let recordedBatchExpiry = newTrans.batchExpiry.trim();
+    let recordedBatchId = newTrans.batchId || '';
+    let successDetailMsg = '';
+
+    if (newTrans.type === 'IN') {
+      const targetExpiry = recordedBatchExpiry; // normalized "YYYY-MM-DD" or "" (no expiry)
+
+      // Match existing batch by EXPIRY DATE:
+      // (both have the same non-empty date, OR both have no expiry date ""/undefined)
+      const existingIdx = batches.findIndex(b => (b.expiryDate || '').trim() === targetExpiry);
+
+      if (existingIdx >= 0) {
+        // MATCH FOUND: Auto-merge into existing batch!
+        const matched = batches[existingIdx];
+        const updatedQty = Number((matched.quantity + quantity).toFixed(10));
+        batches[existingIdx] = {
+          ...matched,
+          quantity: updatedQty
+        };
+        recordedBatchNumber = matched.batchNumber;
+        recordedBatchExpiry = matched.expiryDate || '';
+        recordedBatchId = matched.id;
+        successDetailMsg = `Đã tự động cộng gộp ${formatQty(quantity)} ${item.unit} vào "${matched.batchNumber}" (HSD: ${matched.expiryDate ? formatDate(matched.expiryDate) : 'Không có HSD'}). Tổng tồn lô này: ${formatQty(updatedQty)} ${item.unit}!`;
+      } else {
+        // NO MATCH: Auto-create a brand new batch!
+        let lotName = recordedBatchNumber;
+        if (!lotName) {
+          const nextNum = batches.length + 1;
+          lotName = `Lô ${String(nextNum).padStart(2, '0')}`;
+          let ctr = nextNum;
+          while (batches.some(b => b.batchNumber.trim().toLowerCase() === lotName.toLowerCase())) {
+            ctr++;
+            lotName = `Lô ${String(ctr).padStart(2, '0')}`;
+          }
+        }
+        const newBatchId = `batch-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        const newBatchObj: ItemBatch = {
+          id: newBatchId,
+          batchNumber: lotName,
+          quantity: quantity,
+          expiryDate: targetExpiry,
+          importDate: new Date().toISOString().split('T')[0],
+          note: newTrans.note ? `Nhập kho: ${newTrans.note}` : 'Nhập kho tự động'
+        };
+        batches.push(newBatchObj);
+        recordedBatchNumber = lotName;
+        recordedBatchExpiry = targetExpiry;
+        recordedBatchId = newBatchId;
+        successDetailMsg = `Đã tự động tạo mới "${lotName}" với ${formatQty(quantity)} ${item.unit} (HSD: ${targetExpiry ? formatDate(targetExpiry) : 'Không có HSD'})!`;
+      }
+    } else if (newTrans.type === 'OUT' || newTrans.type === 'TRANSFER') {
+      if (quantity > item.currentStock) {
+        toast.error(`Số lượng xuất (${quantity}) vượt quá tổng tồn kho hiện tại (${item.currentStock})!`);
+        return;
+      }
+
+      if (newTrans.batchId && newTrans.batchId !== 'AUTO_FEFO') {
+        const bIdx = batches.findIndex(b => b.id === newTrans.batchId || b.batchNumber === newTrans.batchNumber);
+        if (bIdx >= 0) {
+          if (batches[bIdx].quantity < quantity) {
+            toast.error(`Số lượng xuất (${quantity}) vượt quá tồn của lô ${batches[bIdx].batchNumber} (${batches[bIdx].quantity})!`);
+            return;
+          }
+          batches[bIdx] = {
+            ...batches[bIdx],
+            quantity: Number((batches[bIdx].quantity - quantity).toFixed(10))
+          };
+          recordedBatchNumber = batches[bIdx].batchNumber;
+          recordedBatchExpiry = batches[bIdx].expiryDate;
+        } else {
+          // Fallback auto FEFO
+          let rem = quantity;
+          const sorted = [...batches].sort((a, b) => (a.expiryDate || '9999').localeCompare(b.expiryDate || '9999'));
+          for (const sb of sorted) {
+            if (rem <= 0) break;
+            const orig = batches.find(o => o.id === sb.id);
+            if (!orig || orig.quantity <= 0) continue;
+            const dec = Math.min(orig.quantity, rem);
+            orig.quantity = Number((orig.quantity - dec).toFixed(10));
+            rem = Number((rem - dec).toFixed(10));
+          }
+          recordedBatchNumber = 'FEFO';
+        }
+      } else {
+        // AUTO_FEFO deduction
+        let rem = quantity;
+        const sorted = [...batches].sort((a, b) => (a.expiryDate || '9999-99-99').localeCompare(b.expiryDate || '9999-99-99'));
+        const deductedLots: string[] = [];
+        for (const sb of sorted) {
+          if (rem <= 0) break;
+          const orig = batches.find(o => o.id === sb.id);
+          if (!orig || orig.quantity <= 0) continue;
+          const dec = Math.min(orig.quantity, rem);
+          orig.quantity = Number((orig.quantity - dec).toFixed(10));
+          rem = Number((rem - dec).toFixed(10));
+          deductedLots.push(orig.batchNumber);
+        }
+        recordedBatchNumber = deductedLots.join(', ');
+      }
+    }
+
+    const { currentStock: newStock, expiryDate: newExpiryDate } = syncBatchesToItem(batches);
 
     try {
       await addDoc(collection(db, "transactions"), {
-        ...newTrans,
+        itemId: newTrans.itemId,
+        type: newTrans.type,
         quantity,
+        fromDeptId: newTrans.fromDeptId || '',
+        toDeptId: newTrans.toDeptId || '',
+        batchId: newTrans.batchId || '',
+        batchNumber: recordedBatchNumber,
+        batchExpiry: recordedBatchExpiry,
+        note: newTrans.note || '',
         timestamp: serverTimestamp()
       });
 
       await updateDoc(doc(db, "items", item.id), {
-        currentStock: newStock
+        batches,
+        currentStock: newStock,
+        expiryDate: newExpiryDate
       });
 
-      toast.success(`Đã ghi nhận giao dịch ${newTrans.type === 'IN' ? 'Nhập' : newTrans.type === 'OUT' ? 'Xuất' : 'Chuyển'} thành công!`);
+      if (successDetailMsg) {
+        toast.success(successDetailMsg);
+      } else {
+        toast.success(`Đã ghi nhận giao dịch ${newTrans.type === 'IN' ? 'Nhập' : newTrans.type === 'OUT' ? 'Xuất' : 'Chuyển'} thành công!`);
+      }
       setShowAdd(false);
-      setNewTrans({ itemId: '', type: 'OUT', quantity: '0', fromDeptId: '', toDeptId: '', note: '' });
+      setNewTrans({ itemId: '', type: newTrans.type, quantity: '0', fromDeptId: '', toDeptId: '', batchId: '', batchNumber: '', batchExpiry: '', note: '' });
       setItemSearchTerm('');
     } catch (err) {
       toast.error('Lỗi khi ghi nhận giao dịch');
@@ -3129,14 +4166,37 @@ function Transactions({ transactions, items, departments, categories, globalSear
     try {
       const item = items.find(i => i.id === transactionToDelete.itemId);
       if (item) {
-        let newStock = item.currentStock;
-        if (transactionToDelete.type === 'IN') newStock -= transactionToDelete.quantity;
-        if (transactionToDelete.type === 'OUT' || transactionToDelete.type === 'TRANSFER') newStock += transactionToDelete.quantity;
+        let batches = [...getItemBatches(item)];
+        const qty = Number(transactionToDelete.quantity) || 0;
 
-        newStock = Number(newStock.toFixed(10));
+        if (transactionToDelete.batchNumber) {
+          const bIdx = batches.findIndex(b => b.batchNumber === transactionToDelete.batchNumber || b.id === transactionToDelete.batchId);
+          if (bIdx >= 0) {
+            if (transactionToDelete.type === 'IN') {
+              batches[bIdx] = {
+                ...batches[bIdx],
+                quantity: Math.max(0, Number((batches[bIdx].quantity - qty).toFixed(10)))
+              };
+            } else if (transactionToDelete.type === 'OUT' || transactionToDelete.type === 'TRANSFER') {
+              batches[bIdx] = {
+                ...batches[bIdx],
+                quantity: Number((batches[bIdx].quantity + qty).toFixed(10))
+              };
+            }
+          } else {
+            let newStock = item.currentStock;
+            if (transactionToDelete.type === 'IN') newStock -= qty;
+            if (transactionToDelete.type === 'OUT' || transactionToDelete.type === 'TRANSFER') newStock += qty;
+            newStock = Math.max(0, Number(newStock.toFixed(10)));
+            await updateDoc(doc(db, "items", item.id), { currentStock: newStock });
+          }
+        }
 
+        const { currentStock: newStock, expiryDate: newExpiryDate } = syncBatchesToItem(batches);
         await updateDoc(doc(db, "items", item.id), {
-          currentStock: newStock
+          batches,
+          currentStock: newStock,
+          expiryDate: newExpiryDate
         });
       }
 
@@ -3242,10 +4302,10 @@ function Transactions({ transactions, items, departments, categories, globalSear
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
           <button 
             onClick={handleExportTransExcel}
-            className={`px-4 py-2 border rounded-xl text-sm font-medium flex items-center gap-2 transition-colors cursor-pointer ${
+            className={`hidden sm:flex px-4 py-2 border rounded-xl text-sm font-medium items-center gap-2 transition-colors cursor-pointer ${
               darkMode ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
             }`}
             title="Xuất theo cấu trúc Google Sheets LichSu_XuatNhap"
@@ -3253,8 +4313,17 @@ function Transactions({ transactions, items, departments, categories, globalSear
             <Download className="w-4 h-4" /> Xuất Sheet
           </button>
           <button 
+            onClick={() => {
+              setNewTrans(prev => ({ ...prev, type: 'IN' }));
+              setShowAdd(true);
+            }}
+            className="flex-1 sm:flex-none justify-center px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-medium flex items-center gap-1.5 transition-colors shadow-lg shadow-emerald-500/20 active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" /> Nhập kho
+          </button>
+          <button 
             onClick={() => setShowAdd(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium flex items-center gap-2 hover:bg-blue-700 transition-colors shadow-lg shadow-blue-500/20 active:scale-95 cursor-pointer"
+            className="flex-1 sm:flex-none justify-center px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium flex items-center gap-2 hover:bg-blue-700 transition-colors shadow-lg shadow-blue-500/20 active:scale-95 cursor-pointer"
           >
             <Plus className="w-4 h-4" /> Tạo giao dịch
           </button>
@@ -3359,6 +4428,13 @@ function Transactions({ transactions, items, departments, categories, globalSear
                       Mã: {item.code}
                     </span>
                   )}
+                  {t.batchNumber && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-purple-600 dark:text-purple-400 font-mono mt-1">
+                      <Tag className="w-3 h-3" />
+                      <span>Lô: {t.batchNumber}</span>
+                      {t.batchExpiry && <span className="text-slate-400 font-sans">· HSD: {formatDate(t.batchExpiry)}</span>}
+                    </div>
+                  )}
                   {t.note && (
                     <p className={`text-xs mt-1 italic ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                       "{t.note}"
@@ -3410,7 +4486,7 @@ function Transactions({ transactions, items, departments, categories, globalSear
           <thead>
             <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
               <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Thời gian</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Vật tư</th>
+              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Vật tư & Lô</th>
               <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Loại</th>
               <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Số lượng</th>
               <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Thành tiền</th>
@@ -3427,7 +4503,18 @@ function Transactions({ transactions, items, departments, categories, globalSear
                   <td className={`px-6 py-4 text-sm ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
                     {formatTimestamp(t.timestamp)}
                   </td>
-                  <td className={`px-6 py-4 font-medium ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item?.name || 'N/A'}</td>
+                  <td className={`px-6 py-4 font-medium ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    <div>
+                      <span>{item?.name || 'N/A'}</span>
+                      {t.batchNumber && (
+                        <div className="flex items-center gap-1.5 text-[11px] text-purple-600 dark:text-purple-400 font-mono mt-0.5">
+                          <Tag className="w-3 h-3" />
+                          <span>Lô: {t.batchNumber}</span>
+                          {t.batchExpiry && <span className="text-slate-400 font-sans">· HSD: {formatDate(t.batchExpiry)}</span>}
+                        </div>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-6 py-4">
                     <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
                       t.type === 'IN' ? 'bg-emerald-100 text-emerald-600' : 
@@ -3456,9 +4543,12 @@ function Transactions({ transactions, items, departments, categories, globalSear
 
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className={`rounded-2xl shadow-2xl w-full max-w-md p-8 border ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
+          <div className={`rounded-2xl shadow-2xl w-full max-w-lg p-6 sm:p-8 border max-h-[90vh] overflow-y-auto ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-100'}`}>
             <div className="flex justify-between items-center mb-6">
-              <h3 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Ghi nhận giao dịch</h3>
+              <div>
+                <h3 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>Ghi nhận giao dịch</h3>
+                <p className="text-xs text-slate-500">Quản lý nhập xuất kho theo từng lô (FEFO)</p>
+              </div>
               <button onClick={() => setShowAdd(false)} className={`transition-colors ${darkMode ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}><X /></button>
             </div>
             <form onSubmit={handleAdd} className="space-y-4">
@@ -3507,7 +4597,7 @@ function Transactions({ transactions, items, departments, categories, globalSear
                       >
                         <span className={`font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{suggestion.name}</span>
                         <span className={`text-[10px] ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                          {categories.find(c => c.id === suggestion.categoryId)?.name} • Tồn: {formatQty(suggestion.currentStock)} {suggestion.unit}
+                          {categories.find(c => c.id === suggestion.categoryId)?.name} • Tồn: {formatQty(suggestion.currentStock)} {suggestion.unit} ({getItemBatches(suggestion).length} lô)
                         </span>
                       </button>
                     ))}
@@ -3516,6 +4606,185 @@ function Transactions({ transactions, items, departments, categories, globalSear
                 {/* Hidden input to maintain required validation on itemId */}
                 <input type="hidden" required value={newTrans.itemId} />
               </div>
+
+              {/* Lot / Batch Selection based on transaction type */}
+              {newTrans.type === 'IN' && (() => {
+                const selectedItem = items.find(i => i.id === newTrans.itemId);
+                const itemBatches = selectedItem ? getItemBatches(selectedItem) : [];
+                const currentExpiry = (newTrans.batchExpiry || '').trim();
+                const matchedBatch = selectedItem ? itemBatches.find(b => (b.expiryDate || '').trim() === currentExpiry) : null;
+
+                return (
+                  <div className={`p-3.5 rounded-xl border space-y-3 ${
+                    darkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-blue-50/70 border-blue-200'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <label className={`text-xs font-bold flex items-center gap-1.5 ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                        <Calendar className="w-3.5 h-3.5" /> Quản lý Hạn sử dụng & Lô nhập
+                      </label>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${
+                        darkMode ? 'bg-blue-900/60 text-blue-300' : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        Tự động quản lý lô
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className={`block text-[11px] font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                          Hạn sử dụng (HSD) của đợt nhập
+                        </label>
+                        <input 
+                          type="date" 
+                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none ${
+                            darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'
+                          }`}
+                          value={newTrans.batchExpiry}
+                          onChange={e => setNewTrans({ ...newTrans, batchExpiry: e.target.value })}
+                        />
+                        <span className={`text-[10px] block mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                          * Để trống nếu vật tư không có hạn sử dụng
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className={`block text-[11px] font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                          Số lô (tùy chọn)
+                        </label>
+                        <input 
+                          type="text" 
+                          placeholder={matchedBatch ? `Lô ${matchedBatch.batchNumber} (tự động gộp)` : "Tự động tạo (vd: Lô 01, Lô 02...)"}
+                          className={`w-full px-3 py-2 border rounded-lg text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none ${
+                            darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400'
+                          }`}
+                          value={newTrans.batchNumber}
+                          onChange={e => setNewTrans({ ...newTrans, batchNumber: e.target.value })}
+                        />
+                        <span className={`text-[10px] block mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                          {matchedBatch ? 'Trùng HSD sẽ tự động gộp vào lô cũ' : 'HSD mới sẽ tự động sinh mã lô'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Real-time merge / create lot status badge */}
+                    {selectedItem && (
+                      <div className="pt-1 space-y-2">
+                        {matchedBatch ? (
+                          <div className="p-2.5 rounded-lg border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-700 text-xs text-emerald-900 dark:text-emerald-200 flex items-start gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" />
+                            <div>
+                              <div className="font-bold flex items-center gap-1.5 flex-wrap">
+                                <span>Trùng HSD với lô: <strong>"{matchedBatch.batchNumber}"</strong></span>
+                                <span className="text-[10px] px-1.5 py-0.5 bg-emerald-200/80 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100 rounded font-semibold">
+                                  Hiện có: {formatQty(matchedBatch.quantity)} {selectedItem.unit}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                                ➔ Hệ thống sẽ <strong>tự động CỘNG GỘP</strong> số lượng nhập vào lô này.
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-2.5 rounded-lg border border-blue-300 bg-blue-50/80 dark:bg-blue-950/40 dark:border-blue-700 text-xs text-blue-900 dark:text-blue-200 flex items-start gap-2">
+                            <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+                            <div>
+                              <div className="font-bold">
+                                Hạn sử dụng mới {currentExpiry ? `(${formatDate(currentExpiry)})` : '(Không có HSD)'}
+                              </div>
+                              <div className="text-[11px] text-blue-700 dark:text-blue-300 mt-0.5">
+                                ➔ Chưa có lô trùng HSD. Hệ thống sẽ <strong>tự động TẠO LÔ MỚI</strong> với số lượng nhập này.
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Quick-pick existing lots */}
+                        {itemBatches.length > 0 && (
+                          <div className="pt-1 border-t border-slate-200 dark:border-slate-700">
+                            <span className={`text-[10px] font-semibold block mb-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                              Các lô hiện có của vật tư này (nhấn để chọn nhanh cùng HSD):
+                            </span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {itemBatches.map(b => {
+                                const isMatching = (b.expiryDate || '').trim() === currentExpiry;
+                                return (
+                                  <button
+                                    key={b.id}
+                                    type="button"
+                                    onClick={() => setNewTrans({ 
+                                      ...newTrans, 
+                                      batchExpiry: b.expiryDate || '', 
+                                      batchNumber: b.batchNumber 
+                                    })}
+                                    className={`px-2.5 py-1 rounded-lg text-xs font-mono border transition-all flex items-center gap-1.5 cursor-pointer ${
+                                      isMatching
+                                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm ring-2 ring-emerald-300 dark:ring-emerald-800'
+                                        : (darkMode ? 'bg-slate-700 hover:bg-slate-600 border-slate-600 text-slate-200' : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700')
+                                    }`}
+                                  >
+                                    <span className="font-bold">{b.batchNumber}</span>
+                                    <span className="opacity-90">({formatQty(b.quantity)} {selectedItem.unit})</span>
+                                    <span className="text-[10px] opacity-75">· {b.expiryDate ? formatDate(b.expiryDate) : 'Ko HSD'}</span>
+                                    {isMatching && <CheckCircle2 className="w-3 h-3 text-white" />}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {(newTrans.type === 'OUT' || newTrans.type === 'TRANSFER') && newTrans.itemId && (() => {
+                const selectedItem = items.find(i => i.id === newTrans.itemId);
+                const itemBatches = selectedItem ? getItemBatches(selectedItem) : [];
+
+                return (
+                  <div className="p-3 rounded-xl border bg-purple-50/50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800 space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <label className={`block text-xs font-semibold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                        Chọn lô xuất (Ưu tiên FEFO - Lô hết hạn trước)
+                      </label>
+                      <span className="text-[10px] text-purple-600 dark:text-purple-400 font-bold">
+                        Tồn tổng: {formatQty(selectedItem?.currentStock)} {selectedItem?.unit}
+                      </span>
+                    </div>
+                    <select
+                      className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-purple-500 outline-none ${
+                        darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-200 text-slate-900'
+                      }`}
+                      value={newTrans.batchId || 'AUTO_FEFO'}
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (val === 'AUTO_FEFO') {
+                          setNewTrans({ ...newTrans, batchId: 'AUTO_FEFO', batchNumber: 'FEFO', batchExpiry: '' });
+                        } else {
+                          const chosenBatch = itemBatches.find(b => b.id === val);
+                          setNewTrans({
+                            ...newTrans,
+                            batchId: val,
+                            batchNumber: chosenBatch?.batchNumber || '',
+                            batchExpiry: chosenBatch?.expiryDate || ''
+                          });
+                        }
+                      }}
+                    >
+                      <option value="AUTO_FEFO">
+                        ⚡ Tự động phân bổ FEFO (Xuất từ lô có hạn dùng gần nhất)
+                      </option>
+                      {itemBatches.filter(b => (Number(b.quantity) || 0) > 0).map(b => (
+                        <option key={b.id} value={b.id}>
+                          Lô {b.batchNumber} - Còn {formatQty(b.quantity)} {selectedItem?.unit} (HSD: {b.expiryDate ? formatDate(b.expiryDate) : 'Không có'})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })()}
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={`block text-sm font-medium mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Số lượng</label>
@@ -3536,7 +4805,7 @@ function Transactions({ transactions, items, departments, categories, globalSear
                 <label className={`block text-sm font-medium mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Ghi chú</label>
                 <textarea className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-200 text-slate-900'}`} rows={2} value={newTrans.note} onChange={e => setNewTrans({...newTrans, note: e.target.value})}></textarea>
               </div>
-              <button type="submit" className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100">Xác nhận</button>
+              <button type="submit" className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100 cursor-pointer">Xác nhận</button>
             </form>
           </div>
         </div>
@@ -3606,8 +4875,14 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
 
   const filteredItems = useMemo(() => {
     return items.filter(item => {
-      const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
-                           item.name.toLowerCase().includes(globalSearch.toLowerCase());
+      const matchesSearch = (
+        matchesSearchQuery(item.name, searchTerm) ||
+        matchesSearchQuery(item.code, searchTerm) ||
+        matchesSearchQuery(item.specification, searchTerm)
+      ) && (
+        matchesSearchQuery(item.name, globalSearch) ||
+        matchesSearchQuery(item.code, globalSearch)
+      );
       const matchesCategory = filterCategory ? categoryIdMap.get(item.categoryId) === filterCategory : true;
       return matchesSearch && matchesCategory;
     });
@@ -3733,7 +5008,20 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
       <div className="md:hidden space-y-3">
         {filteredItems.length === 0 ? (
           <div className={`p-8 text-center rounded-2xl border ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-500'}`}>
-            Không tìm thấy vật tư nào để kiểm kê.
+            <p className="font-medium mb-2">
+              {searchTerm 
+                ? `Không tìm thấy vật tư nào khớp với từ khóa "${searchTerm}".`
+                : 'Không tìm thấy vật tư nào để kiểm kê.'}
+            </p>
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="mt-1 px-3 py-1.5 text-xs font-bold rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+              >
+                Xóa bộ lọc tìm kiếm
+              </button>
+            )}
           </div>
         ) : (
           filteredItems.map(item => {
@@ -3890,6 +5178,16 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
           </tbody>
         </table>
       </div>
+
+      {/* Mobile Sticky Quick Search Bar (docked directly above bottom nav) */}
+      <MobileQuickSearchBar 
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
+        placeholder="🔍 Tìm nhanh vật tư để kiểm kê..."
+        totalCount={items.length}
+        filteredCount={filteredItems.length}
+        darkMode={darkMode}
+      />
     </div>
   );
 }
@@ -3933,8 +5231,14 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
 
   const filteredItems = useMemo(() => {
     return items.filter(item => {
-      const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
-                           item.name.toLowerCase().includes(globalSearch.toLowerCase());
+      const matchesSearch = (
+        matchesSearchQuery(item.name, searchTerm) ||
+        matchesSearchQuery(item.code, searchTerm) ||
+        matchesSearchQuery(item.specification, searchTerm)
+      ) && (
+        matchesSearchQuery(item.name, globalSearch) ||
+        matchesSearchQuery(item.code, globalSearch)
+      );
       const matchesCategory = filterCategory ? categoryIdMap.get(item.categoryId) === filterCategory : true;
       return matchesSearch && matchesCategory;
     });
@@ -4079,7 +5383,20 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
       <div className="md:hidden space-y-3">
         {filteredItems.length === 0 ? (
           <div className={`p-8 text-center rounded-2xl border ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-white border-slate-200 text-slate-500'}`}>
-            Không có vật tư nào.
+            <p className="font-medium mb-2">
+              {searchTerm 
+                ? `Không tìm thấy vật tư nào khớp với từ khóa "${searchTerm}".`
+                : 'Không có vật tư nào để dự trù.'}
+            </p>
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="mt-1 px-3 py-1.5 text-xs font-bold rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+              >
+                Xóa bộ lọc tìm kiếm
+              </button>
+            )}
           </div>
         ) : (
           filteredItems.map(item => {
@@ -4234,6 +5551,16 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
           </tbody>
         </table>
       </div>
+
+      {/* Mobile Sticky Quick Search Bar (docked directly above bottom nav) */}
+      <MobileQuickSearchBar 
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
+        placeholder="🔍 Tìm nhanh vật tư để dự trù..."
+        totalCount={items.length}
+        filteredCount={filteredItems.length}
+        darkMode={darkMode}
+      />
     </div>
   );
 }
@@ -4263,6 +5590,11 @@ function Reports({ transactions, items, categories, departments, holidays, globa
     return Math.floor(day / 7) + 1;
   });
   const [filterDeptId, setFilterDeptId] = useState('');
+  const [expandedReportItemIds, setExpandedReportItemIds] = useState<string[]>([]);
+
+  const toggleExpandReportItem = (itemId: string) => {
+    setExpandedReportItemIds(prev => prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId]);
+  };
 
   useEffect(() => {
     if (reportType === 'custom') return;
@@ -4555,11 +5887,18 @@ function Reports({ transactions, items, categories, departments, holidays, globa
 
   const filteredDetailedReport = useMemo(() => {
     return detailedReport.filter(item => {
-      const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = (
+        matchesSearchQuery(item.name, searchTerm) ||
+        matchesSearchQuery(item.code, searchTerm) ||
+        matchesSearchQuery(item.specification, searchTerm)
+      ) && (
+        matchesSearchQuery(item.name, globalSearch) ||
+        matchesSearchQuery(item.code, globalSearch)
+      );
       const hasChanges = item.inQty > 0 || item.outQty > 0;
       return matchesSearch && (!showOnlyWithChanges || hasChanges);
     });
-  }, [detailedReport, searchTerm, showOnlyWithChanges]);
+  }, [detailedReport, searchTerm, globalSearch, showOnlyWithChanges]);
 
   const itemComparisonData = useMemo(() => {
     const data = filteredDetailedReport
@@ -4593,16 +5932,21 @@ function Reports({ transactions, items, categories, departments, holidays, globa
   }, []);
 
   const handleExportExcel = () => {
-    const data = filteredDetailedReport.map(item => ({
-      'Tên vật tư': item.name,
-      'Nhóm': categories.find(c => c.id === item.categoryId)?.name || '-',
-      'Đơn vị': item.unit,
-      'Tồn đầu': formatQty(item.openingBalance),
-      'Nhập trong kỳ': formatQty(item.inQty),
-      'Xuất trong kỳ': formatQty(item.outQty),
-      'Tồn cuối': formatQty(item.closingBalance),
-      'Tiêu thụ bình quân/ngày': item.avgDailyUsage.toFixed(2)
-    }));
+    const data = filteredDetailedReport.map(item => {
+      const batches = getItemBatches(item);
+      const batchSummary = batches.map(b => `${b.batchNumber}: ${formatQty(b.quantity)} (HSD: ${b.expiryDate || 'N/A'})`).join('; ');
+      return {
+        'Tên vật tư': item.name,
+        'Nhóm': categories.find(c => c.id === item.categoryId)?.name || '-',
+        'Đơn vị': item.unit,
+        'Tồn đầu (Tất cả lô)': formatQty(item.openingBalance),
+        'Nhập trong kỳ': formatQty(item.inQty),
+        'Xuất trong kỳ': formatQty(item.outQty),
+        'Tồn cuối (Tổng các lô)': formatQty(item.closingBalance),
+        'Chi tiết các lô': batchSummary || 'Không có lô',
+        'Tiêu thụ bình quân/ngày': item.avgDailyUsage.toFixed(2)
+      };
+    });
 
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -4994,40 +6338,132 @@ function Reports({ transactions, items, categories, departments, holidays, globa
         {/* Mobile Detailed Report Card List (< md) */}
         <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-700/60">
           {filteredDetailedReport.length > 0 ? (
-            filteredDetailedReport.map((item) => (
-              <div key={item.id} className="p-4 space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <h5 className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</h5>
-                    <span className="text-[11px] text-slate-400">{categories.find(c => c.id === item.categoryId)?.name} · ĐV: {item.unit}</span>
+            filteredDetailedReport.map((item) => {
+              const itemBatches = getItemBatches(item);
+              const isExpanded = expandedReportItemIds.includes(item.id);
+
+              return (
+                <div key={item.id} className="p-4 space-y-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h5 className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</h5>
+                        {item.code && (
+                          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800">
+                            {item.code}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[11px] text-slate-400">{categories.find(c => c.id === item.categoryId)?.name} · ĐV: {item.unit}</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleExpandReportItem(item.id)}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors cursor-pointer ${
+                            isExpanded
+                              ? 'bg-purple-600 text-white border-purple-600'
+                              : (darkMode ? 'bg-purple-950/50 text-purple-300 border-purple-800/60' : 'bg-purple-50 text-purple-700 border-purple-200')
+                          }`}
+                        >
+                          <Layers className="w-3 h-3 text-purple-500" />
+                          <span>{itemBatches.length} lô</span>
+                          <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-[10px] text-slate-400 block uppercase font-semibold">Tồn cuối (Tất cả lô)</span>
+                      <span className={`text-sm font-black px-2 py-0.5 rounded-md inline-block mt-0.5 ${darkMode ? 'bg-slate-700 text-slate-100' : 'bg-slate-100 text-slate-900'}`}>
+                        {formatQty(item.closingBalance)} {item.unit}
+                      </span>
+                    </div>
                   </div>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-md shrink-0 ${darkMode ? 'bg-slate-700 text-slate-200' : 'bg-slate-100 text-slate-800'}`}>
-                    Tồn cuối: {formatQty(item.closingBalance)}
-                  </span>
+
+                  {/* Lot breakdown expanded section (Mobile) */}
+                  {isExpanded && (
+                    <div className={`p-3 rounded-xl border space-y-2 ${darkMode ? 'bg-slate-900/70 border-slate-700' : 'bg-purple-50/50 border-purple-100'}`}>
+                      <div className="flex items-center justify-between text-[11px] font-bold text-purple-700 dark:text-purple-300">
+                        <span className="flex items-center gap-1">
+                          <Layers className="w-3 h-3" /> Chi tiết phân bổ theo từng lô:
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-normal">
+                          Tổng tồn: {formatQty(item.currentStock)} {item.unit}
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {itemBatches.map(b => {
+                          const isExp = b.expiryDate && new Date(b.expiryDate) < new Date();
+                          const isNear = b.expiryDate && 
+                            (new Date(b.expiryDate).getTime() - new Date().getTime()) < (30 * 24 * 60 * 60 * 1000) &&
+                            (new Date(b.expiryDate).getTime() - new Date().getTime()) > 0;
+                          return (
+                            <div key={b.id} className={`p-2 rounded-lg border text-xs flex justify-between items-center ${
+                              darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-purple-100 shadow-xs'
+                            }`}>
+                              <div>
+                                <span className="font-mono font-bold text-purple-600 dark:text-purple-400 block">
+                                  {b.batchNumber}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  HSD: {b.expiryDate ? formatDate(b.expiryDate) : 'Chưa có'}
+                                </span>
+                              </div>
+                              <div className="text-right">
+                                <span className="font-bold text-slate-800 dark:text-white block">
+                                  {formatQty(b.quantity)} {item.unit}
+                                </span>
+                                <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                  isExp ? 'bg-red-100 text-red-600 dark:bg-red-950/60 dark:text-red-300' :
+                                  isNear ? 'bg-orange-100 text-orange-600 dark:bg-orange-950/60 dark:text-orange-300' :
+                                  'bg-emerald-100 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                }`}>
+                                  {isExp ? 'Hết hạn' : isNear ? 'Sắp hết' : 'An toàn'}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2 text-xs pt-1">
+                    <div className={`p-2 rounded-lg ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+                      <span className="text-[10px] text-slate-400 block">Tồn đầu</span>
+                      <span className="font-semibold">{formatQty(item.openingBalance)}</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                      <span className="text-[10px] block opacity-80">Tổng nhập</span>
+                      <span className="font-bold">+{formatQty(item.inQty)}</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400">
+                      <span className="text-[10px] block opacity-80">Tổng xuất</span>
+                      <span className="font-bold">-{formatQty(item.outQty)}</span>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-slate-400 flex justify-between items-center pt-0.5">
+                    <span>Tiêu thụ trung bình:</span>
+                    <span className="font-medium text-slate-600 dark:text-slate-300">{item.avgDailyUsage.toFixed(2)} {item.unit}/ngày</span>
+                  </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-xs pt-1">
-                  <div className={`p-2 rounded-lg ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
-                    <span className="text-[10px] text-slate-400 block">Tồn đầu</span>
-                    <span className="font-semibold">{formatQty(item.openingBalance)}</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                    <span className="text-[10px] block opacity-80">Nhập</span>
-                    <span className="font-bold">+{formatQty(item.inQty)}</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400">
-                    <span className="text-[10px] block opacity-80">Xuất</span>
-                    <span className="font-bold">-{formatQty(item.outQty)}</span>
-                  </div>
-                </div>
-                <div className="text-[11px] text-slate-400 flex justify-between items-center pt-0.5">
-                  <span>Tiêu thụ trung bình:</span>
-                  <span className="font-medium text-slate-600 dark:text-slate-300">{item.avgDailyUsage.toFixed(2)} {item.unit}/ngày</span>
-                </div>
-              </div>
-            ))
+              );
+            })
           ) : (
             <div className="p-8 text-center text-slate-400">
-              Không tìm thấy dữ liệu phù hợp
+              <p className="font-medium mb-2">
+                {searchTerm 
+                  ? `Không tìm thấy vật tư nào khớp với từ khóa "${searchTerm}".`
+                  : 'Không tìm thấy dữ liệu vật tư phù hợp trong kỳ.'}
+              </p>
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="mt-1 px-3 py-1.5 text-xs font-bold rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                >
+                  Xóa bộ lọc tìm kiếm
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -5037,29 +6473,126 @@ function Reports({ transactions, items, categories, departments, holidays, globa
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={`${darkMode ? 'bg-slate-900/50' : 'bg-slate-50/50'}`}>
-                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Vật tư</th>
-                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Tồn đầu</th>
-                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Nhập</th>
-                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Xuất</th>
-                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Tồn cuối</th>
-                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>Sử dụng/ngày</th>
+                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>
+                  Vật tư & Phân lô
+                </th>
+                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>
+                  Tồn đầu (Tất cả lô)
+                </th>
+                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>
+                  Tổng nhập
+                </th>
+                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>
+                  Tổng xuất
+                </th>
+                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>
+                  Tồn cuối (Tổng các lô)
+                </th>
+                <th className={`p-4 text-xs font-bold uppercase tracking-wider border-b text-right ${darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-500 border-slate-100'}`}>
+                  Sử dụng/ngày
+                </th>
               </tr>
             </thead>
             <tbody className={`divide-y ${darkMode ? 'divide-slate-700' : 'divide-slate-100'}`}>
               {filteredDetailedReport.length > 0 ? (
-                filteredDetailedReport.map((item) => (
-                  <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50/50'}`}>
-                    <td className="p-4">
-                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</p>
-                      <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{categories.find(c => c.id === item.categoryId)?.name}</p>
-                    </td>
-                    <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{formatQty(item.openingBalance)} {item.unit}</td>
-                    <td className="p-4 text-right text-sm font-bold text-blue-600">+{formatQty(item.inQty)}</td>
-                    <td className="p-4 text-right text-sm font-bold text-rose-600">-{formatQty(item.outQty)}</td>
-                    <td className={`p-4 text-right text-sm font-bold ${darkMode ? 'text-slate-200' : 'text-slate-900'}`}>{formatQty(item.closingBalance)} {item.unit}</td>
-                    <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{item.avgDailyUsage.toFixed(2)}</td>
-                  </tr>
-                ))
+                filteredDetailedReport.map((item) => {
+                  const itemBatches = getItemBatches(item);
+                  const isExpanded = expandedReportItemIds.includes(item.id);
+
+                  return (
+                    <React.Fragment key={item.id}>
+                      <tr className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50/50'} ${isExpanded ? (darkMode ? 'bg-slate-800/40' : 'bg-purple-50/20') : ''}`}>
+                        <td className="p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</p>
+                                {item.code && (
+                                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800">
+                                    {item.code}
+                                  </span>
+                                )}
+                              </div>
+                              <p className={`text-[10px] ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{categories.find(c => c.id === item.categoryId)?.name}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleExpandReportItem(item.id)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all cursor-pointer ${
+                                isExpanded
+                                  ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                                  : (darkMode ? 'bg-purple-950/40 text-purple-300 border-purple-800/60 hover:bg-purple-900/60' : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100')
+                              }`}
+                              title="Bấm để xem danh sách chi tiết các lô"
+                            >
+                              <Layers className="w-3.5 h-3.5 text-purple-500" />
+                              <span>{itemBatches.length} lô</span>
+                              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                            </button>
+                          </div>
+                        </td>
+                        <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>{formatQty(item.openingBalance)} {item.unit}</td>
+                        <td className="p-4 text-right text-sm font-bold text-blue-600">+{formatQty(item.inQty)}</td>
+                        <td className="p-4 text-right text-sm font-bold text-rose-600">-{formatQty(item.outQty)}</td>
+                        <td className={`p-4 text-right text-sm font-bold ${darkMode ? 'text-slate-200' : 'text-slate-900'}`}>{formatQty(item.closingBalance)} {item.unit}</td>
+                        <td className={`p-4 text-right text-sm font-medium ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{item.avgDailyUsage.toFixed(2)}</td>
+                      </tr>
+
+                      {/* Expanded Sub-row for lot breakdown */}
+                      {isExpanded && (
+                        <tr className={`${darkMode ? 'bg-slate-900/70' : 'bg-purple-50/30'}`}>
+                          <td colSpan={6} className="px-6 py-3 border-b border-purple-100 dark:border-slate-700">
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between text-xs font-bold text-purple-700 dark:text-purple-300">
+                                <span className="flex items-center gap-1.5">
+                                  <Layers className="w-3.5 h-3.5" /> Chi tiết phân bổ theo từng lô của vật tư (Tổng tồn: {formatQty(item.currentStock)} {item.unit}):
+                                </span>
+                                <span className="text-[11px] text-slate-500 font-normal">
+                                  Tồn cuối hiển thị ở trên là tổng số lượng của tất cả các lô gộp lại
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                                {itemBatches.map(b => {
+                                  const isExp = b.expiryDate && new Date(b.expiryDate) < new Date();
+                                  const isNear = b.expiryDate && 
+                                    (new Date(b.expiryDate).getTime() - new Date().getTime()) < (30 * 24 * 60 * 60 * 1000) &&
+                                    (new Date(b.expiryDate).getTime() - new Date().getTime()) > 0;
+
+                                  return (
+                                    <div key={b.id} className={`p-2.5 rounded-xl border text-xs flex justify-between items-center ${
+                                      darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white border-purple-100 shadow-sm'
+                                    }`}>
+                                      <div>
+                                        <span className="font-mono font-bold text-purple-600 dark:text-purple-400 block">
+                                          {b.batchNumber}
+                                        </span>
+                                        <span className="text-[10px] text-slate-400">
+                                          HSD: {b.expiryDate ? formatDate(b.expiryDate) : 'Chưa có'}
+                                        </span>
+                                      </div>
+                                      <div className="text-right">
+                                        <span className="font-extrabold text-slate-800 dark:text-white block">
+                                          {formatQty(b.quantity)} {item.unit}
+                                        </span>
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                          isExp ? 'bg-red-100 text-red-600 dark:bg-red-950/60 dark:text-red-300' :
+                                          isNear ? 'bg-orange-100 text-orange-600 dark:bg-orange-950/60 dark:text-orange-300' :
+                                          'bg-emerald-100 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                        }`}>
+                                          {isExp ? 'Hết hạn' : isNear ? 'Sắp hết' : 'An toàn'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })
               ) : (
                 <tr>
                   <td colSpan={6} className="p-12 text-center">
@@ -5230,6 +6763,16 @@ function Reports({ transactions, items, categories, departments, holidays, globa
           </div>
         </div>
       </div>
+
+      {/* Mobile Sticky Quick Search Bar (docked directly above bottom nav) */}
+      <MobileQuickSearchBar 
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
+        placeholder="🔍 Tìm nhanh vật tư trong báo cáo..."
+        totalCount={detailedReport.length}
+        filteredCount={filteredDetailedReport.length}
+        darkMode={darkMode}
+      />
     </div>
   );
 }
