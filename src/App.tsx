@@ -1478,6 +1478,11 @@ export default function App() {
               isAnalyzing={isAnalyzing} 
               onAnalyze={runAiAnalysis} 
               darkMode={darkMode}
+              items={items}
+              categories={categories}
+              transactions={transactions}
+              departments={departments}
+              holidays={holidays}
             />
           )}
         </div>
@@ -7132,7 +7137,27 @@ function Holidays({ holidays, darkMode }: { holidays: Holiday[], darkMode?: bool
   );
 }
 
-function AiAssistant({ analysis, isAnalyzing, onAnalyze, darkMode }: { analysis: AiAnalysis | null, isAnalyzing: boolean, onAnalyze: () => void, darkMode?: boolean }) {
+function AiAssistant({ 
+  analysis, 
+  isAnalyzing, 
+  onAnalyze, 
+  darkMode,
+  items = [],
+  categories = [],
+  transactions = [],
+  departments = [],
+  holidays = []
+}: { 
+  analysis: AiAnalysis | null;
+  isAnalyzing: boolean;
+  onAnalyze: () => void;
+  darkMode?: boolean;
+  items?: any[];
+  categories?: any[];
+  transactions?: any[];
+  departments?: any[];
+  holidays?: any[];
+}) {
   const [activeMode, setActiveMode] = useState<'chat' | 'report'>('chat');
   const [messages, setMessages] = useState<Array<{ id: string; role: 'user' | 'model'; text: string; time: string }>>([
     {
@@ -7148,6 +7173,7 @@ function AiAssistant({ analysis, isAnalyzing, onAnalyze, darkMode }: { analysis:
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const quickQuestions = [
+    'Cho tôi danh mục văn phòng phẩm hiện có',
     'Vật tư nào đã hết hoặc sắp hết hàng?',
     'Kiểm tra các lô hàng cận hạn (< 60 ngày) và đã quá hạn?',
     'Đề xuất kế hoạch dự trù vật tư cần nhập cho tuần tới',
@@ -7187,7 +7213,12 @@ function AiAssistant({ analysis, isAnalyzing, onAnalyze, darkMode }: { analysis:
         .slice(-6)
         .map(m => ({ role: m.role, text: m.text }));
 
-      const answer = await askAiAssistant(textToSend, history);
+      const answer = await askAiAssistant(textToSend, history, {
+        items,
+        categories,
+        transactions,
+        holidays
+      });
 
       const botMsgId = 'bot-' + Date.now();
       setMessages(prev => [

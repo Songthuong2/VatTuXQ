@@ -120,18 +120,24 @@ async function startServer() {
       },
     };
 
-    // Model fallback chain: Try primary gemini-3.8-flash, then fallback to gemini-flash-latest or gemini-3.1-flash-lite if 503/429
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    // Model fallback chain: Try primary gemini-3.8-flash, then fallback to gemini-flash-latest with 8s timeout
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
 
     for (const modelName of modelsToTry) {
       try {
-        const response = await ai.models.generateContent({
+        const timeoutPromise = new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error('TIMEOUT_AFTER_8S')), 8000)
+        );
+
+        const apiPromise = ai.models.generateContent({
           model: modelName,
           contents: prompt,
           config: schemaConfig,
         });
 
-        if (response.text) {
+        const response: any = await Promise.race([apiPromise, timeoutPromise]);
+
+        if (response && response.text) {
           const parsed = JSON.parse(response.text);
           return res.json(parsed);
         }
@@ -219,11 +225,15 @@ CÂU HỎI MỚI CỦA NGƯỜI DÙNG:
 ${question}
 `;
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
 
     for (const modelName of modelsToTry) {
       try {
-        const response = await ai.models.generateContent({
+        const timeoutPromise = new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error('TIMEOUT_AFTER_6S')), 6000)
+        );
+
+        const apiPromise = ai.models.generateContent({
           model: modelName,
           contents: prompt,
           config: {
@@ -231,7 +241,9 @@ ${question}
           },
         });
 
-        if (response.text) {
+        const response: any = await Promise.race([apiPromise, timeoutPromise]);
+
+        if (response && response.text) {
           return res.json({ text: response.text });
         }
       } catch (err: any) {

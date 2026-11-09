@@ -203,19 +203,144 @@ ${topConsumed.length > 0 ? topConsumed.map((c, idx) => `${idx + 1}. **${c.name}:
   };
 }
 
-// Fallback Q&A Engine for Warehouse Assistant
+function removeVietnameseTones(str: string): string {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .trim();
+}
+
+function getItemCategoryName(item: any): string {
+  return item.categoryName || item.category || (item.categoryId ? String(item.categoryId) : 'Khác');
+}
+
+// Fallback & Offline Q&A Engine for Warehouse Assistant
 export function generateExpertChatAnswer(
   question: string,
   items: any[] = [],
   transactions: any[] = [],
   holidays: any[] = []
 ): string {
-  const q = question.toLowerCase().trim();
+  const q = (question || '').toLowerCase().trim();
+  const cleanQ = removeVietnameseTones(q);
   const now = new Date();
   const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
 
-  // 1. Kiểm tra hỏi về Hạn sử dụng / Quá hạn / Cận hạn
-  if (q.includes('hạn') || q.includes('hết hạn') || q.includes('cận hạn') || q.includes('date') || q.includes('fefo')) {
+  // 1. KIỂM TRA HỎI VỀ DANH MỤC / NHÓM VẬT TƯ (Category Query)
+  // Ví dụ: "Cho tôi danh mục văn phòng phẩm hiện có", "Danh sách thuốc", "Vật tư tiêu hao"
+  const isAskingVPP = cleanQ.includes('van phong pham') || cleanQ.includes('vpp');
+  const isAskingDuoc = cleanQ.includes('duoc') || cleanQ.includes('thuoc') || cleanQ.includes('dong y') || cleanQ.includes('tay y');
+  const isAskingTieuHao = cleanQ.includes('tieu hao') || cleanQ.includes('vat tu tieu hao');
+  const isAskingHoaChat = cleanQ.includes('hoa chat') || cleanQ.includes('rua phim') || cleanQ.includes('thuoc can quang');
+  const isAskingAllCategories = (cleanQ.includes('danh muc') || cleanQ.includes('danh sach')) && 
+    (cleanQ.includes('cac nhom') || cleanQ.includes('toan bo') || cleanQ.includes('tat ca') || cleanQ.includes('hien co') && !isAskingVPP && !isAskingDuoc && !isAskingTieuHao && !isAskingHoaChat);
+
+  if (isAskingVPP || isAskingDuoc || isAskingTieuHao || isAskingHoaChat) {
+    let targetCategoryName = '';
+    let categoryTitle = '';
+    let itemFilter: (item: any) => boolean = () => false;
+
+    if (isAskingVPP) {
+      targetCategoryName = 'Văn phòng phẩm';
+      categoryTitle = 'Văn phòng phẩm (VPP)';
+      itemFilter = (i: any) => {
+        const cat = removeVietnameseTones(getItemCategoryName(i));
+        const name = removeVietnameseTones(i.name || '');
+        return cat.includes('van phong pham') || cat.includes('vpp') ||
+          name.includes('giay') || name.includes('but') || name.includes('so') || 
+          name.includes('kep') || name.includes('bam kim') || name.includes('muc') || 
+          name.includes('file') || name.includes('bia') || name.includes('bang dinh');
+      };
+    } else if (isAskingDuoc) {
+      targetCategoryName = 'Dược (Đông y, Tây y)';
+      categoryTitle = 'Dược (Đông y, Tây y) & Thuốc';
+      itemFilter = (i: any) => {
+        const cat = removeVietnameseTones(getItemCategoryName(i));
+        const name = removeVietnameseTones(i.name || '');
+        return cat.includes('duoc') || cat.includes('thuoc') || cat.includes('dong y') || cat.includes('tay y') ||
+          name.includes('dimedrol') || name.includes('thuoc') || name.includes('dich truyen') || name.includes('ong') || name.includes('lo');
+      };
+    } else if (isAskingTieuHao) {
+      targetCategoryName = 'Vật tư tiêu hao';
+      categoryTitle = 'Vật tư tiêu hao';
+      itemFilter = (i: any) => {
+        const cat = removeVietnameseTones(getItemCategoryName(i));
+        return cat.includes('tieu hao');
+      };
+    } else if (isAskingHoaChat) {
+      targetCategoryName = 'Hóa chất & Thuốc cản quang';
+      categoryTitle = 'Hóa chất & Thuốc cản quang';
+      itemFilter = (i: any) => {
+        const cat = removeVietnameseTones(getItemCategoryName(i));
+        const name = removeVietnameseTones(i.name || '');
+        return cat.includes('hoa chat') || name.includes('can quang') || name.includes('omnipaque') || name.includes('barit') || name.includes('ultravist') || name.includes('xenetix');
+      };
+    }
+
+    const matchedItems = items.filter(itemFilter);
+
+    if (matchedItems.length > 0) {
+      let ans = `### 📁 Danh mục Vật tư: Nhóm **${categoryTitle}**\n\n`;
+      ans += `Hiện tại trong kho đang quản lý **${matchedItems.length}** mặt hàng thuộc nhóm này:\n\n`;
+      ans += `| STT | Tên vật tư | Tồn kho | Đơn vị | Định mức Min | Đơn giá | Trạng thái |\n`;
+      ans += `| :---: | :--- | :---: | :---: | :---: | :---: | :---: |\n`;
+
+      matchedItems.forEach((i, idx) => {
+        const cur = Number(i.currentStock || 0);
+        const min = Number(i.minStock || 0);
+        const price = Number(i.price || 0).toLocaleString('vi-VN') + ' đ';
+        let status = '🟢 Đủ hàng';
+        if (cur <= 0) status = '🔴 Cạn kho';
+        else if (cur <= min) status = '🟡 Chạm định mức';
+
+        ans += `| ${idx + 1} | **${i.name}** | **${cur}** | ${i.unit || 'đơn vị'} | ${min} | ${price} | ${status} |\n`;
+      });
+
+      const outCount = matchedItems.filter(i => Number(i.currentStock || 0) <= 0).length;
+      const lowCount = matchedItems.filter(i => Number(i.currentStock || 0) > 0 && Number(i.currentStock || 0) <= Number(i.minStock || 0)).length;
+      const totalUnits = Math.round(matchedItems.reduce((acc, i) => acc + Number(i.currentStock || 0), 0) * 10) / 10;
+
+      ans += `\n**📊 Tóm tắt nhóm ${categoryTitle}:**\n`;
+      ans += `- **Tổng số lượng tồn:** **${totalUnits}** đơn vị.\n`;
+      ans += `- **Tình trạng:** **${matchedItems.length - outCount - lowCount}** mặt hàng an toàn, **${lowCount}** mặt hàng chạm định mức, **${outCount}** mặt hàng đã cạn kho.`;
+      return ans;
+    } else {
+      return `### 📁 Danh mục: Nhóm **${categoryTitle}**\n\nHiện tại kho chưa có mặt hàng nào được phân loại thuộc nhóm **${categoryTitle}** hoặc chưa có dữ liệu tồn kho cho nhóm này. Bạn có thể kiểm tra lại tại menu Quản lý vật tư.`;
+    }
+  }
+
+  // 2. TỔNG QUAN DANH SÁCH CÁC NHÓM VẬT TƯ
+  if (isAskingAllCategories) {
+    const categoriesMap: Record<string, { count: number; items: string[] }> = {};
+    items.forEach(i => {
+      const cat = getItemCategoryName(i);
+      if (!categoriesMap[cat]) {
+        categoriesMap[cat] = { count: 0, items: [] };
+      }
+      categoriesMap[cat].count += 1;
+      if (categoriesMap[cat].items.length < 4) {
+        categoriesMap[cat].items.push(i.name);
+      }
+    });
+
+    let ans = `### 📋 Tổng hợp Danh mục Các Nhóm Vật tư trong Kho\n\n`;
+    ans += `Kho Chẩn đoán hình ảnh hiện đang quản lý tổng cộng **${items.length}** mặt hàng phân bổ theo các nhóm:\n\n`;
+
+    Object.entries(categoriesMap).forEach(([catName, data], idx) => {
+      ans += `${idx + 1}. **${catName}:** **${data.count}** mặt hàng\n`;
+      ans += `   *Gồm có:* ${data.items.join(', ')}${data.count > data.items.length ? ` và ${data.count - data.items.length} mặt hàng khác` : ''}\n\n`;
+    });
+
+    ans += `*Gợi ý:* Bạn có thể hỏi chi tiết: *"Cho tôi danh mục văn phòng phẩm"*, *"Cho tôi danh mục thuốc"* hoặc *"Vật tư nào sắp hết hàng?"*`;
+    return ans;
+  }
+
+  // 3. KIỂM TRA HỎI VỀ HẠN SỬ DỤNG / QUÁ HẠN / CẬN HẠN (FEFO)
+  if (cleanQ.includes('han') || cleanQ.includes('het han') || cleanQ.includes('can han') || cleanQ.includes('date') || cleanQ.includes('fefo')) {
     const expired: { name: string; batch: string; exp: string; qty: number; unit: string }[] = [];
     const nearing: { name: string; batch: string; exp: string; qty: number; unit: string; daysLeft: number }[] = [];
 
@@ -247,7 +372,7 @@ export function generateExpertChatAnswer(
     if (expired.length > 0) {
       ans += `🚨 **Các lô hàng ĐÃ QUÁ HẠN (${expired.length} mục) - Cần niêm phong ngay:**\n`;
       expired.forEach((e, idx) => {
-        ans += `${idx + 1}. **${e.name}** | Số lô: \`${e.batch}\` | Hạn dùng: **${e.exp}** | Số lượng: **${e.qty} ${e.unit}**\n`;
+        ans += `${idx + 1}. **${e.name}** | Lô: \`${e.batch}\` | Hạn dùng: **${e.exp}** | Số lượng: **${e.qty} ${e.unit}**\n`;
       });
       ans += `\n`;
     } else {
@@ -257,7 +382,7 @@ export function generateExpertChatAnswer(
     if (nearing.length > 0) {
       ans += `⚠️ **Các lô hàng CẬN HẠN (< 60 ngày) (${nearing.length} mục) - Ưu tiên xuất trước theo FEFO:**\n`;
       nearing.sort((a, b) => a.daysLeft - b.daysLeft).forEach((n, idx) => {
-        ans += `${idx + 1}. **${n.name}** | Số lô: \`${n.batch}\` | Hạn: **${n.exp}** (còn **${n.daysLeft} ngày**) | Tồn: **${n.qty} ${n.unit}**\n`;
+        ans += `${idx + 1}. **${n.name}** | Lô: \`${n.batch}\` | Hạn: **${n.exp}** (còn **${n.daysLeft} ngày**) | Tồn: **${n.qty} ${n.unit}**\n`;
       });
     } else {
       ans += `✅ Không có lô hàng nào sắp hết hạn trong 60 ngày tới.\n`;
@@ -265,8 +390,8 @@ export function generateExpertChatAnswer(
     return ans;
   }
 
-  // 2. Kiểm tra hỏi về Hết hàng / Sắp hết / Tồn tối thiểu
-  if (q.includes('hết hàng') || q.includes('sắp hết') || q.includes('tối thiểu') || q.includes('cạn kho') || q.includes('cảnh báo')) {
+  // 4. KIỂM TRA HỎI VỀ HẾT HÀNG / SẮP HẾT / ĐỊNH MỨC TỐI THIỂU
+  if (cleanQ.includes('het hang') || cleanQ.includes('sap het') || cleanQ.includes('can kho') || cleanQ.includes('toi thieu') || cleanQ.includes('cham dinh muc')) {
     const out = items.filter(i => Number(i.currentStock || 0) <= 0);
     const low = items.filter(i => Number(i.currentStock || 0) > 0 && Number(i.currentStock || 0) <= Number(i.minStock || 0));
 
@@ -274,7 +399,7 @@ export function generateExpertChatAnswer(
     if (out.length > 0) {
       ans += `🚨 **Vật tư đã CẠN KHO (Tồn = 0) (${out.length} mặt hàng):**\n`;
       out.forEach((i, idx) => {
-        ans += `${idx + 1}. **${i.name}** (${i.category || 'Vật tư'}) - Định mức tối thiểu yêu cầu: **${i.minStock || 0} ${i.unit}**\n`;
+        ans += `${idx + 1}. **${i.name}** (${getItemCategoryName(i)}) - Định mức yêu cầu: **${i.minStock || 0} ${i.unit}**\n`;
       });
       ans += `\n`;
     } else {
@@ -284,7 +409,7 @@ export function generateExpertChatAnswer(
     if (low.length > 0) {
       ans += `⚠️ **Vật tư SẮP HẾT (Tồn kho <= Định mức tối thiểu) (${low.length} mặt hàng):**\n`;
       low.forEach((i, idx) => {
-        ans += `${idx + 1}. **${i.name}**: Hiện còn **${i.currentStock} ${i.unit}** (Ngưỡng an toàn: ${i.minStock} ${i.unit})\n`;
+        ans += `${idx + 1}. **${i.name}**: Còn **${i.currentStock} ${i.unit}** (Ngưỡng an toàn: ${i.minStock} ${i.unit})\n`;
       });
     } else {
       ans += `✅ Tất cả các mặt hàng khác đều duy trì lượng tồn trên mức tối thiểu.\n`;
@@ -292,8 +417,8 @@ export function generateExpertChatAnswer(
     return ans;
   }
 
-  // 3. Kiểm tra hỏi về Dự trù / Đề xuất nhập
-  if (q.includes('dự trù') || q.includes('nhập hàng') || q.includes('cần mua') || q.includes('kế hoạch')) {
+  // 5. KIỂM TRA HỎI VỀ DỰ TRÙ / ĐỀ XUẤT NHẬP HÀNG
+  if (cleanQ.includes('du tru') || cleanQ.includes('nhap hang') || cleanQ.includes('can mua') || cleanQ.includes('ke hoach nhap')) {
     const needed = items.filter(i => Number(i.currentStock || 0) <= Number(i.minStock || 0));
     let ans = `### 📝 Khuyến nghị Lập Kế hoạch Dự trù Vật tư\n\n`;
     if (needed.length === 0) {
@@ -317,8 +442,12 @@ export function generateExpertChatAnswer(
     return ans;
   }
 
-  // 4. Kiểm tra hỏi về Xuất kho / Tiêu hao / Phòng ban
-  if (q.includes('tiêu hao') || q.includes('xuất') || q.includes('phòng') || q.includes('nhiều nhất')) {
+  // 6. KIỂM TRA HỎI VỀ TIÊU HAO / XUẤT KHO / PHÒNG MÁY (Phải KHÔNG chứa "văn phòng")
+  const isDeptOrConsumption = 
+    (cleanQ.includes('tieu hao') || cleanQ.includes('xuat kho') || cleanQ.includes('phong may') || cleanQ.includes('phong ban') || 
+     (cleanQ.includes('phong') && !cleanQ.includes('van phong')));
+
+  if (isDeptOrConsumption) {
     const outTx = transactions.filter(t => t.type === 'OUT');
     const deptTotals: Record<string, number> = {};
     const itemTotals: Record<string, { name: string; qty: number; unit: string }> = {};
@@ -327,11 +456,16 @@ export function generateExpertChatAnswer(
       const dept = t.department || 'Chung / Khác';
       deptTotals[dept] = (deptTotals[dept] || 0) + Number(t.quantity || 0);
 
-      const id = t.itemId || t.itemName || 'other';
-      if (!itemTotals[id]) {
-        itemTotals[id] = { name: t.itemName || 'Vật tư', qty: 0, unit: t.unit || 'đơn vị' };
+      // Tra cứu tên vật tư thực tế từ items
+      const matched = items.find(i => i.id === t.itemId || i.name === t.itemName);
+      const realName = matched?.name || t.itemName || 'Vật tư tiêu hao';
+      const realUnit = matched?.unit || t.unit || 'đơn vị';
+      const key = matched?.id || realName;
+
+      if (!itemTotals[key]) {
+        itemTotals[key] = { name: realName, qty: 0, unit: realUnit };
       }
-      itemTotals[id].qty += Number(t.quantity || 0);
+      itemTotals[key].qty += Number(t.quantity || 0);
     });
 
     const topItems = Object.values(itemTotals).sort((a, b) => b.qty - a.qty).slice(0, 5);
@@ -340,17 +474,19 @@ export function generateExpertChatAnswer(
     ans += `**Top 5 vật tư được xuất sử dụng nhiều nhất:**\n`;
     if (topItems.length > 0) {
       topItems.forEach((it, idx) => {
-        ans += `${idx + 1}. **${it.name}:** ${it.qty} ${it.unit}\n`;
+        const rounded = Math.round(it.qty * 10) / 10;
+        ans += `${idx + 1}. **${it.name}:** **${rounded}** ${it.unit}\n`;
       });
     } else {
       ans += `- Chưa ghi nhận lịch sử xuất kho gần đây.\n`;
     }
 
-    ans += `\n**Lượng vật tư đã cấp theo phòng ban:**\n`;
+    ans += `\n**Lượng vật tư đã cấp theo phòng ban/phòng máy:**\n`;
     const depts = Object.entries(deptTotals);
     if (depts.length > 0) {
       depts.forEach(([d, q]) => {
-        ans += `- **Phòng ${d}:** ${q} đơn vị\n`;
+        const rounded = Math.round(q * 10) / 10;
+        ans += `- **Phòng ${d}:** **${rounded}** đơn vị\n`;
       });
     } else {
       ans += `- Chưa có dữ liệu phân bổ phòng ban.\n`;
@@ -358,10 +494,10 @@ export function generateExpertChatAnswer(
     return ans;
   }
 
-  // 5. Tìm kiếm vật tư cụ thể theo tên (Tra cứu)
+  // 7. TRA CỨU MỘT VẬT TƯ CỤ THỂ THEO TÊN
   const matchedItem = items.find(i => {
-    const name = (i.name || '').toLowerCase();
-    return q.includes(name) || name.split(' ').filter(w => w.length > 2).some(w => q.includes(w));
+    const nameClean = removeVietnameseTones(i.name || '');
+    return nameClean && (cleanQ.includes(nameClean) || nameClean.split(' ').filter(w => w.length > 2).some(w => cleanQ.includes(w)));
   });
 
   if (matchedItem) {
@@ -374,7 +510,7 @@ export function generateExpertChatAnswer(
     else if (cur <= min) statusText = '🟡 Cảnh báo (Dưới định mức tối thiểu)';
 
     let ans = `### 🔍 Thông tin chi tiết vật tư: **${matchedItem.name}**\n\n`;
-    ans += `- **Nhóm phân loại:** ${matchedItem.category || 'Chưa phân nhóm'}\n`;
+    ans += `- **Nhóm phân loại:** ${getItemCategoryName(matchedItem)}\n`;
     ans += `- **Số lượng tồn hiện tại:** **${cur} ${matchedItem.unit}**\n`;
     ans += `- **Định mức tồn tối thiểu:** ${min} ${matchedItem.unit}\n`;
     ans += `- **Đơn giá:** ${Number(matchedItem.price || 0).toLocaleString('vi-VN')} đ\n`;
@@ -392,14 +528,16 @@ export function generateExpertChatAnswer(
     return ans;
   }
 
-  // 6. Trả lời tổng quan mặc định
-  return `### 💡 Tổng quan kho Chẩn đoán hình ảnh\n\n` +
+  // 8. TRẢ LỜI MẶC ĐỊNH
+  return `### 💡 Trợ lý AI Khoa Chẩn đoán Hình ảnh\n\n` +
     `Hiện tại hệ thống đang quản lý **${items.length}** danh mục vật tư với **${transactions.length}** giao dịch ghi nhận gần đây.\n\n` +
-    `Bạn có thể đặt các câu hỏi trực tiếp như:\n` +
+    `Bạn có thể hỏi tôi các câu hỏi cụ thể như:\n` +
+    `- *"Cho tôi danh mục văn phòng phẩm hiện có"*\n` +
+    `- *"Cho tôi danh mục thuốc & dược"* \n` +
     `- *"Vật tư nào đã hết hàng hoặc sắp hết?"*\n` +
     `- *"Có lô hàng nào quá hạn hoặc cận hạn dưới 60 ngày không?"*\n` +
     `- *"Đề xuất kế hoạch dự trù vật tư cần nhập cho tuần tới"* \n` +
-    `- *"Tra cứu tồn kho của [Tên vật tư cụ thể]"*\n` +
     `- *"Phòng ban nào tiêu hao nhiều nhất gần đây?"*`;
 }
+
 

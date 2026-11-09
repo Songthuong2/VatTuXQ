@@ -53,25 +53,45 @@ export async function analyzeInventory(): Promise<AnalysisResult> {
 
 export async function askAiAssistant(
   question: string,
-  history: Array<{ role: 'user' | 'model'; text: string }> = []
+  history: Array<{ role: 'user' | 'model'; text: string }> = [],
+  cachedData?: {
+    items?: Record<string, any>[];
+    transactions?: Record<string, any>[];
+    holidays?: Record<string, any>[];
+    categories?: Record<string, any>[];
+  }
 ): Promise<string> {
-  let items: Record<string, any>[] = [];
-  let transactions: Record<string, any>[] = [];
-  let holidays: Record<string, any>[] = [];
+  let items: Record<string, any>[] = cachedData?.items || [];
+  let transactions: Record<string, any>[] = cachedData?.transactions || [];
+  let holidays: Record<string, any>[] = cachedData?.holidays || [];
 
-  try {
-    const itemsSnapshot = await getDocs(collection(db, "items"));
-    items = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  // Nếu chưa có sẵn dữ liệu trong RAM, mới truy vấn Firestore
+  if (items.length === 0) {
+    try {
+      const itemsSnapshot = await getDocs(collection(db, "items"));
+      items = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    const transactionsSnapshot = await getDocs(
-      query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(40))
-    );
-    transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
+      const transactionsSnapshot = await getDocs(
+        query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(40))
+      );
+      transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
 
-    const holidaysSnapshot = await getDocs(collection(db, "holidays"));
-    holidays = holidaysSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
-  } catch (dbErr) {
-    console.warn("Could not query Firestore for AI Q&A, using fallback:", dbErr);
+      const holidaysSnapshot = await getDocs(collection(db, "holidays"));
+      holidays = holidaysSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
+    } catch (dbErr) {
+      console.warn("Could not query Firestore for AI Q&A, using fallback:", dbErr);
+    }
+  }
+
+  // Tự động gắn tên nhóm phân loại (categoryName) vào từng vật tư
+  if (cachedData?.categories && cachedData.categories.length > 0) {
+    items = items.map(i => {
+      const cat = cachedData.categories?.find(c => c.id === i.categoryId);
+      return {
+        ...i,
+        categoryName: cat?.name || i.category || '',
+      };
+    });
   }
 
   try {
