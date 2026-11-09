@@ -10,7 +10,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { generateExpertInventoryAnalysis } from './src/expertAnalysis.js';
+import { generateExpertInventoryAnalysis, generateExpertChatAnswer } from './src/expertAnalysis.js';
 
 
 async function startServer() {
@@ -24,16 +24,22 @@ async function startServer() {
 
   // Helper for server-side Gemini client
   function getGeminiClient() {
-    const apiKey = process.env.GEMINI_API_KEY || '';
-    if (!apiKey) return null;
-    return new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.startsWith('MY_') || apiKey.length < 15) {
+      return null;
+    }
+    try {
+      return new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
         },
-      },
-    });
+      });
+    } catch {
+      return null;
+    }
   }
 
   // API Route: Inventory Analysis with Gemini AI (Resilient Multi-Model & Fallback)
@@ -130,14 +136,115 @@ async function startServer() {
           return res.json(parsed);
         }
       } catch (err: any) {
-        console.warn(`Model ${modelName} encountered: ${err?.message || err}. Attempting fallback...`);
-        // Continue loop to next model in chain
+        const errStr = String(err?.message || err || '');
+        if (errStr.includes('API_KEY_INVALID') || errStr.includes('API key not valid') || errStr.includes('PERMISSION_DENIED')) {
+          break;
+        }
       }
     }
 
-    // If all cloud models are experiencing temporary demand spikes (503 / 429), return expert rule-based analysis
-    console.info('Cloud Gemini models busy, serving guaranteed expert inventory analysis.');
+    // If cloud models unavailable or API key invalid, serve guaranteed expert inventory analysis
     return res.json(generateExpertInventoryAnalysis(items, transactions, holidays));
+  });
+
+  // API Route: Interactive Q&A Warehouse Copilot with Gemini AI (Grounded in Inventory Database)
+  app.post('/api/gemini/chat', async (req, res) => {
+    const { question = '', history = [], items = [], transactions = [], holidays = [] } = req.body;
+
+    if (!question || typeof question !== 'string') {
+      return res.status(400).json({ error: 'Question is required' });
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays);
+      return res.json({ text: fallbackText });
+    }
+
+    // Build compact context of inventory database
+    const inventoryOverview = items.map(i => ({
+      name: i.name,
+      category: i.category,
+      currentStock: i.currentStock,
+      minStock: i.minStock,
+      unit: i.unit,
+      price: i.price,
+      batches: (i.batches || []).map((b: any) => ({
+        batchNumber: b.batchNumber,
+        expiryDate: b.expiryDate,
+        quantity: b.quantity,
+      })),
+      expiryDate: i.expiryDate,
+    }));
+
+    const recentTx = transactions.slice(0, 30).map(t => ({
+      type: t.type,
+      itemName: t.itemName,
+      quantity: t.quantity,
+      department: t.department,
+      date: t.date || t.timestamp,
+    }));
+
+    const systemInstruction = `
+Bạn là Trợ lý AI Chuyên gia Quản lý Kho Dược & Vật tư Y tế của Khoa Chẩn đoán Hình ảnh (CĐHA).
+Nhiệm vụ cốt lõi:
+1. Dựa trên dữ liệu kho thực tế được cung cấp dưới đây, hãy trả lời chính xác, trung thực các câu hỏi của nhân viên và bác sĩ.
+2. Tra cứu tồn kho, hạn dùng lô (FEFO), định mức tối thiểu:
+   - Nêu rõ số lượng tồn, đơn vị, định mức an toàn.
+   - Nếu có các lô hàng, liệt kê rõ số lô, hạn dùng và số lượng từng lô.
+   - Ưu tiên xuất dùng lô cận hạn trước theo nguyên tắc FEFO.
+3. Khi được hỏi về kế hoạch dự trù hoặc xin lời khuyên:
+   - Dựa trên lượng tiêu hao thực tế, số ngày làm việc (đã trừ ngày nghỉ).
+   - Đưa ra khuyến nghị nhập hàng cụ thể, có căn cứ số liệu rõ ràng.
+4. Phong cách:
+   - Chuẩn văn phong y tế, mạch lạc, dễ hiểu.
+   - Trình bày dạng Markdown với gạch đầu dòng hoặc bảng biểu số liệu khi cần thiết.
+   - KHÔNG bịa đặt số liệu (Zero Hallucination). Nếu vật tư không tồn tại trong danh mục, hãy nêu rõ ràng.
+`;
+
+    const prompt = `
+DỮ LIỆU KHO HIỆN TẠI (TỔNG CỘNG ${items.length} MẶT HÀNG):
+${JSON.stringify(inventoryOverview, null, 2)}
+
+GIAO DỊCH GẦN ĐÂY (${recentTx.length} GIAO DỊCH):
+${JSON.stringify(recentTx, null, 2)}
+
+DANH SÁCH NGÀY NGHỈ ĐÃ GHI NHẬN:
+${JSON.stringify(holidays, null, 2)}
+
+LỊCH SỬ TRAO ĐỔI TRƯỚC ĐÓ:
+${history.map((h: any) => `${h.role === 'user' ? 'Người dùng' : 'Trợ lý AI'}: ${h.text}`).join('\n')}
+
+CÂU HỎI MỚI CỦA NGƯỜI DÙNG:
+${question}
+`;
+
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+
+    for (const modelName of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            systemInstruction,
+          },
+        });
+
+        if (response.text) {
+          return res.json({ text: response.text });
+        }
+      } catch (err: any) {
+        const errStr = String(err?.message || err || '');
+        if (errStr.includes('API_KEY_INVALID') || errStr.includes('API key not valid') || errStr.includes('PERMISSION_DENIED')) {
+          break; // Stop retrying other models with an invalid key
+        }
+      }
+    }
+
+    // Fallback if cloud API is busy or API key is not active
+    const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays);
+    return res.json({ text: fallbackText });
   });
 
   // API Route: General Gemini generate content

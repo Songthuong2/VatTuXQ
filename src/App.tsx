@@ -47,7 +47,12 @@ import {
   Info,
   PanelLeftClose,
   PanelLeftOpen,
-  ChevronLeft
+  ChevronLeft,
+  Send,
+  MessageSquare,
+  Copy,
+  Check,
+  Bot
 } from 'lucide-react';
 import { GoogleSheetsHub } from './GoogleSheetsHub';
 import { UsersManager, StaffUser } from './UsersManager';
@@ -79,7 +84,7 @@ import {
   getDocs,
   where
 } from 'firebase/firestore';
-import { analyzeInventory } from './geminiService';
+import { analyzeInventory, askAiAssistant } from './geminiService';
 import ReactMarkdown from 'react-markdown';
 import { toast, Toaster } from 'sonner';
 import { 
@@ -7128,159 +7133,473 @@ function Holidays({ holidays, darkMode }: { holidays: Holiday[], darkMode?: bool
 }
 
 function AiAssistant({ analysis, isAnalyzing, onAnalyze, darkMode }: { analysis: AiAnalysis | null, isAnalyzing: boolean, onAnalyze: () => void, darkMode?: boolean }) {
+  const [activeMode, setActiveMode] = useState<'chat' | 'report'>('chat');
+  const [messages, setMessages] = useState<Array<{ id: string; role: 'user' | 'model'; text: string; time: string }>>([
+    {
+      id: 'welcome',
+      role: 'model',
+      text: `Xin chào! Tôi là **Trợ lý AI Khoa Chẩn đoán Hình ảnh**. \n\nTôi được kết nối trực tiếp với **cơ sở dữ liệu thời gian thực** của hệ thống (bao gồm danh mục vật tư, số lượng tồn kho thực tế, các lô hạn dùng theo nguyên tắc **FEFO**, lịch sử xuất nhập kho và lịch nghỉ trực).\n\nBạn có thể hỏi tôi bất kỳ câu hỏi nào về tình trạng kho, tra cứu vật tư, hoặc yêu cầu tính toán dự trù nhập hàng!`,
+      time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+    }
+  ]);
+  const [inputQuestion, setInputQuestion] = useState('');
+  const [isAsking, setIsAsking] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const quickQuestions = [
+    'Vật tư nào đã hết hoặc sắp hết hàng?',
+    'Kiểm tra các lô hàng cận hạn (< 60 ngày) và đã quá hạn?',
+    'Đề xuất kế hoạch dự trù vật tư cần nhập cho tuần tới',
+    'Phòng ban nào tiêu hao nhiều vật tư nhất gần đây?',
+    'Tra cứu tồn kho các loại thuốc cản quang và bơm tiêm'
+  ];
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    if (activeMode === 'chat') {
+      scrollToBottom();
+    }
+  }, [messages, isAsking, activeMode]);
+
+  const handleSend = async (questionText?: string) => {
+    const textToSend = (questionText || inputQuestion).trim();
+    if (!textToSend || isAsking) return;
+
+    const userMsgId = 'user-' + Date.now();
+    const newMsg = {
+      id: userMsgId,
+      role: 'user' as const,
+      text: textToSend,
+      time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setMessages(prev => [...prev, newMsg]);
+    setInputQuestion('');
+    setIsAsking(true);
+
+    try {
+      const history = messages
+        .filter(m => m.id !== 'welcome')
+        .slice(-6)
+        .map(m => ({ role: m.role, text: m.text }));
+
+      const answer = await askAiAssistant(textToSend, history);
+
+      const botMsgId = 'bot-' + Date.now();
+      setMessages(prev => [
+        ...prev,
+        {
+          id: botMsgId,
+          role: 'model',
+          text: answer || 'Đã ghi nhận yêu cầu. Hiện tại chưa có dữ liệu bổ sung.',
+          time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+        }
+      ]);
+    } catch (err) {
+      console.error('Chat AI error:', err);
+      setMessages(prev => [
+        ...prev,
+        {
+          id: 'err-' + Date.now(),
+          role: 'model',
+          text: '⚠️ Không thể kết nối với dịch vụ AI. Đang hiển thị kết quả tra cứu nội bộ...',
+          time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+        }
+      ]);
+    } finally {
+      setIsAsking(false);
+    }
+  };
+
+  const handleCopy = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    toast.success('Đã sao chép nội dung trả lời của AI!');
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleClearChat = () => {
+    setMessages([
+      {
+        id: 'welcome',
+        role: 'model',
+        text: `Đã làm mới cuộc hội thoại. Bạn có thể tiếp tục đặt câu hỏi về kho vật tư CĐHA!`,
+        time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+      }
+    ]);
+    toast.info('Đã xóa lịch sử hỏi đáp.');
+  };
+
   return (
     <div className="space-y-6">
-      <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-8 rounded-2xl text-white shadow-xl shadow-blue-100 relative overflow-hidden">
-        <div className="relative z-10">
-          <h3 className="text-2xl font-bold mb-2 flex items-center gap-2">
-            <BrainCircuit className="w-8 h-8" /> Trợ lý AI Gemini
-          </h3>
-          <p className="text-blue-100 mb-6 max-w-xl">
-            Sử dụng trí tuệ nhân tạo để phân tích tồn kho, dự báo tiêu thụ và đưa ra các đề xuất tối ưu hóa vật tư cho khoa.
-          </p>
-          <button 
-            onClick={onAnalyze}
-            disabled={isAnalyzing}
-            className="px-8 py-3 bg-white text-blue-600 font-bold rounded-xl hover:bg-blue-50 transition-all flex items-center gap-2 disabled:opacity-50 shadow-lg"
-          >
-            {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <BrainCircuit className="w-5 h-5" />}
-            {isAnalyzing ? 'Đang phân tích...' : 'Bắt đầu phân tích dữ liệu'}
-          </button>
-        </div>
-        <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-3xl"></div>
-      </div>
-
-      {analysis && (
-        <div className="space-y-6">
-          {/* Summary Card */}
-          <div className={`p-8 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-            <div className="flex items-center gap-3 text-blue-600 mb-4">
-              <BrainCircuit className="w-6 h-6" />
-              <h4 className="font-bold text-lg">Tóm tắt từ Gemini</h4>
+      {/* Hero Banner with Mode Selector */}
+      <div className="bg-gradient-to-br from-blue-600 via-indigo-600 to-blue-800 p-6 md:p-8 rounded-3xl text-white shadow-xl shadow-blue-500/10 relative overflow-hidden">
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="max-w-2xl">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/15 backdrop-blur-md text-xs font-semibold mb-3 border border-white/20">
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <span>AI Copilot Khoa Chẩn đoán Hình ảnh</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
             </div>
-            <p className={`text-lg leading-relaxed italic ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
-              "{analysis.summary}"
+            <h3 className="text-2xl md:text-3xl font-extrabold tracking-tight mb-2 flex items-center gap-3">
+              <BrainCircuit className="w-8 h-8 shrink-0 text-blue-200" />
+              Trợ lý Trí tuệ Nhân tạo Thông minh
+            </h3>
+            <p className="text-blue-100 text-sm md:text-base leading-relaxed">
+              Truy vấn và tương tác trực tiếp trên cơ sở dữ liệu tồn kho, phân tích hạn sử dụng lô (FEFO), dự báo tiêu thụ phòng máy và đề xuất kế hoạch dự trù y tế chuẩn xác.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Alerts Section */}
-            <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-              <h4 className={`font-bold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                <AlertTriangle className="w-5 h-5 text-red-500" /> Cảnh báo quan trọng
-              </h4>
-              <div className="space-y-3">
-                {analysis.alerts.map((alert, idx) => (
-                  <div key={idx} className={`p-4 rounded-xl border flex gap-3 ${
-                    alert.type === 'danger' ? (darkMode ? 'bg-red-900/20 border-red-800/30 text-red-400' : 'bg-red-50 border-red-100 text-red-700') :
-                    alert.type === 'warning' ? (darkMode ? 'bg-amber-900/20 border-amber-800/30 text-amber-400' : 'bg-amber-50 border-amber-100 text-amber-700') :
-                    (darkMode ? 'bg-blue-900/20 border-blue-800/30 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-700')
-                  }`}>
-                    <div className="mt-0.5">
-                      {alert.type === 'danger' ? <X className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold">{alert.item || 'Cảnh báo hệ thống'}</p>
-                      <p className="text-xs opacity-90">{alert.message}</p>
-                    </div>
-                  </div>
-                ))}
-                {analysis.alerts.length === 0 && (
-                  <p className="text-sm text-slate-400 italic">Không có cảnh báo nào.</p>
-                )}
-              </div>
-            </div>
+          {/* Navigation Pills */}
+          <div className="flex bg-white/10 backdrop-blur-md p-1.5 rounded-2xl border border-white/20 shrink-0 self-start md:self-auto">
+            <button
+              type="button"
+              onClick={() => setActiveMode('chat')}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all ${
+                activeMode === 'chat'
+                  ? 'bg-white text-blue-600 shadow-md'
+                  : 'text-white/80 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              Hỏi đáp trực tiếp (Q&A)
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveMode('report')}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all ${
+                activeMode === 'report'
+                  ? 'bg-white text-blue-600 shadow-md'
+                  : 'text-white/80 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              Báo cáo chuyên sâu
+            </button>
+          </div>
+        </div>
 
-            {/* Recommendations Section */}
-            <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-              <h4 className={`font-bold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                <TrendingUp className="w-5 h-5 text-emerald-500" /> Đề xuất tối ưu
-              </h4>
-              <div className="space-y-3">
-                {analysis.recommendations.map((rec, idx) => (
-                  <div key={idx} className={`p-4 rounded-xl border flex gap-3 ${darkMode ? 'bg-slate-700/50 border-slate-700' : 'bg-slate-50 border-slate-100'}`}>
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                      rec.priority === 'high' ? (darkMode ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-600') :
-                      rec.priority === 'medium' ? (darkMode ? 'bg-amber-900/30 text-amber-400' : 'bg-amber-100 text-amber-600') :
-                      (darkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600')
-                    }`}>
-                      <span className="text-[10px] font-black uppercase">{rec.priority}</span>
-                    </div>
-                    <div>
-                      <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{rec.action}</p>
-                      <p className={`text-xs ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{rec.reason}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+        {/* Decorative background glow */}
+        <div className="absolute top-0 right-0 w-80 h-80 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/3 blur-3xl pointer-events-none"></div>
+      </div>
+
+      {/* MODE 1: INTERACTIVE Q&A COPILOT */}
+      {activeMode === 'chat' && (
+        <div className="grid grid-cols-1 gap-6">
+          {/* Quick suggestions */}
+          <div className={`p-4 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <span className={`text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                <Sparkles className="w-3.5 h-3.5 text-blue-500" /> Gợi ý câu hỏi nhanh:
+              </span>
+              {messages.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handleClearChat}
+                  className="text-xs text-slate-400 hover:text-red-500 transition-colors flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" /> Làm mới đoạn chat
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {quickQuestions.map((q, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleSend(q)}
+                  disabled={isAsking}
+                  className={`text-xs px-3.5 py-2 rounded-xl border transition-all text-left flex items-center gap-2 ${
+                    darkMode 
+                      ? 'bg-slate-700/50 hover:bg-blue-900/30 border-slate-600 text-slate-200 hover:border-blue-500' 
+                      : 'bg-slate-50 hover:bg-blue-50 border-slate-200 text-slate-700 hover:border-blue-400 hover:text-blue-700'
+                  }`}
+                >
+                  <ChevronRight className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                  <span>{q}</span>
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Anomalies Section */}
-          {analysis.anomalies.length > 0 && (
-            <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-              <h4 className={`font-bold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
-                <Search className="w-5 h-5 text-purple-500" /> Phát hiện bất thường
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {analysis.anomalies.map((anomaly, idx) => (
-                  <div key={idx} className={`p-4 rounded-xl border flex items-center justify-between ${darkMode ? 'bg-purple-900/20 border-purple-800/30' : 'bg-purple-50 border-purple-100'}`}>
-                    <p className={`text-sm ${darkMode ? 'text-purple-300' : 'text-purple-900'}`}>{anomaly.description}</p>
-                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase ${
-                      anomaly.severity === 'high' ? 'bg-red-500 text-white' :
-                      anomaly.severity === 'medium' ? 'bg-amber-500 text-white' :
-                      'bg-blue-500 text-white'
-                    }`}>
-                      {anomaly.severity}
-                    </span>
-                  </div>
-                ))}
+          {/* Chat Messages Feed */}
+          <div className={`rounded-3xl border shadow-sm flex flex-col h-[580px] overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+            {/* Chat header */}
+            <div className={`px-6 py-3.5 border-b flex items-center justify-between ${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-slate-50/80 border-slate-200'}`}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm">
+                  <Bot className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    AI Copilot - Trực tuyến
+                  </h4>
+                  <p className="text-[11px] text-emerald-500 font-medium flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    Sẵn sàng giải đáp từ cơ sở dữ liệu kho
+                  </p>
+                </div>
               </div>
+
+              <span className={`text-xs px-3 py-1 rounded-full border ${darkMode ? 'bg-slate-700 border-slate-600 text-slate-300' : 'bg-white border-slate-200 text-slate-600'}`}>
+                {messages.length} tin nhắn
+              </span>
+            </div>
+
+            {/* Scrollable messages */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
+              {messages.map((m) => {
+                const isUser = m.role === 'user';
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex gap-3 max-w-[90%] md:max-w-[80%] ${isUser ? 'ml-auto flex-row-reverse' : 'mr-auto'}`}
+                  >
+                    {!isUser && (
+                      <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                        <Sparkles className="w-4 h-4 text-amber-300" />
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      <div
+                        className={`p-4 rounded-2xl text-sm leading-relaxed ${
+                          isUser
+                            ? 'bg-blue-600 text-white rounded-br-none shadow-md shadow-blue-500/10'
+                            : darkMode
+                            ? 'bg-slate-700/60 border border-slate-600 text-slate-100 rounded-bl-none shadow-sm'
+                            : 'bg-slate-50 border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
+                        }`}
+                      >
+                        {isUser ? (
+                          <p className="whitespace-pre-wrap font-medium">{m.text}</p>
+                        ) : (
+                          <div className={`prose max-w-none text-sm ${darkMode ? 'prose-invert text-slate-100' : 'text-slate-800'}`}>
+                            <ReactMarkdown>{m.text}</ReactMarkdown>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className={`flex items-center gap-2 text-[10px] px-1 ${isUser ? 'justify-end text-blue-200/80' : darkMode ? 'text-slate-400' : 'text-slate-400'}`}>
+                        <span>{m.time}</span>
+                        {!isUser && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(m.id, m.text)}
+                            className="hover:text-blue-500 transition-colors flex items-center gap-1"
+                          >
+                            {copiedId === m.id ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-500" />
+                                <span className="text-emerald-500">Đã chép</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Sao chép</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {isAsking && (
+                <div className="flex gap-3 max-w-[80%] mr-auto items-center">
+                  <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm animate-pulse">
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  </div>
+                  <div className={`p-4 rounded-2xl rounded-bl-none text-xs flex items-center gap-3 border ${
+                    darkMode ? 'bg-slate-700/60 border-slate-600 text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-600'
+                  }`}>
+                    <span className="flex gap-1">
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"></span>
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:0.2s]"></span>
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce [animation-delay:0.4s]"></span>
+                    </span>
+                    <span>Đang đối chiếu dữ liệu tồn kho và tổng hợp câu trả lời...</span>
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input form */}
+            <div className={`p-4 border-t ${darkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSend();
+                }}
+                className="flex items-center gap-2"
+              >
+                <input
+                  type="text"
+                  value={inputQuestion}
+                  onChange={(e) => setInputQuestion(e.target.value)}
+                  placeholder="Đặt câu hỏi về tồn kho, hạn dùng, dự trù hoặc phân bổ phòng ban..."
+                  disabled={isAsking}
+                  className={`flex-1 px-4 py-3 rounded-2xl text-sm border focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
+                    darkMode
+                      ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-400'
+                      : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 shadow-inner'
+                  }`}
+                />
+                <button
+                  type="submit"
+                  disabled={!inputQuestion.trim() || isAsking}
+                  className="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold flex items-center gap-2 transition-all disabled:opacity-40 disabled:hover:bg-blue-600 shadow-md shadow-blue-500/20"
+                >
+                  <Send className="w-4 h-4" />
+                  <span className="hidden sm:inline">Gửi</span>
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODE 2: COMPREHENSIVE DIAGNOSTIC REPORT */}
+      {activeMode === 'report' && (
+        <div className="space-y-6">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={onAnalyze}
+              disabled={isAnalyzing}
+              className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all flex items-center gap-2 disabled:opacity-50 shadow-md"
+            >
+              {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              {isAnalyzing ? 'Đang phân tích...' : 'Làm mới báo cáo phân tích'}
+            </button>
+          </div>
+
+          {analysis ? (
+            <div className="space-y-6">
+              {/* Summary Card */}
+              <div className={`p-8 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                <div className="flex items-center gap-3 text-blue-600 mb-4">
+                  <BrainCircuit className="w-6 h-6" />
+                  <h4 className="font-bold text-lg">Tóm tắt tình trạng kho</h4>
+                </div>
+                <p className={`text-lg leading-relaxed italic ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                  "{analysis.summary}"
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Alerts Section */}
+                <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                  <h4 className={`font-bold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    <AlertTriangle className="w-5 h-5 text-red-500" /> Cảnh báo quan trọng
+                  </h4>
+                  <div className="space-y-3">
+                    {analysis.alerts.map((alert, idx) => (
+                      <div key={idx} className={`p-4 rounded-xl border flex gap-3 ${
+                        alert.type === 'danger' ? (darkMode ? 'bg-red-900/20 border-red-800/30 text-red-400' : 'bg-red-50 border-red-100 text-red-700') :
+                        alert.type === 'warning' ? (darkMode ? 'bg-amber-900/20 border-amber-800/30 text-amber-400' : 'bg-amber-50 border-amber-100 text-amber-700') :
+                        (darkMode ? 'bg-blue-900/20 border-blue-800/30 text-blue-400' : 'bg-blue-50 border-blue-100 text-blue-700')
+                      }`}>
+                        <div className="mt-0.5">
+                          {alert.type === 'danger' ? <X className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold">{alert.item || 'Cảnh báo hệ thống'}</p>
+                          <p className="text-xs opacity-90">{alert.message}</p>
+                        </div>
+                      </div>
+                    ))}
+                    {analysis.alerts.length === 0 && (
+                      <p className="text-sm text-slate-400 italic">Không có cảnh báo nào.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Recommendations Section */}
+                <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                  <h4 className={`font-bold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    <TrendingUp className="w-5 h-5 text-emerald-500" /> Đề xuất tối ưu (FEFO & Dự trù)
+                  </h4>
+                  <div className="space-y-3">
+                    {analysis.recommendations.map((rec, idx) => (
+                      <div key={idx} className={`p-4 rounded-xl border flex gap-3 ${darkMode ? 'bg-slate-700/50 border-slate-700' : 'bg-slate-50 border-slate-100'}`}>
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                          rec.priority === 'high' ? (darkMode ? 'bg-red-900/30 text-red-400' : 'bg-red-100 text-red-600') :
+                          rec.priority === 'medium' ? (darkMode ? 'bg-amber-900/30 text-amber-400' : 'bg-amber-100 text-amber-600') :
+                          (darkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600')
+                        }`}>
+                          <span className="text-[10px] font-black uppercase">{rec.priority}</span>
+                        </div>
+                        <div>
+                          <p className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>{rec.action}</p>
+                          <p className={`text-xs ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{rec.reason}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Anomalies Section */}
+              {analysis.anomalies.length > 0 && (
+                <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                  <h4 className={`font-bold mb-4 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    <Search className="w-5 h-5 text-purple-500" /> Phát hiện bất thường lưu lượng
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {analysis.anomalies.map((anomaly, idx) => (
+                      <div key={idx} className={`p-4 rounded-xl border flex items-center justify-between ${darkMode ? 'bg-purple-900/20 border-purple-800/30' : 'bg-purple-50 border-purple-100'}`}>
+                        <p className={`text-sm ${darkMode ? 'text-purple-300' : 'text-purple-900'}`}>{anomaly.description}</p>
+                        <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase ${
+                          anomaly.severity === 'high' ? 'bg-red-500 text-white' :
+                          anomaly.severity === 'medium' ? 'bg-amber-500 text-white' :
+                          'bg-blue-500 text-white'
+                        }`}>
+                          {anomaly.severity}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Detailed Analysis Section */}
+              <div className={`p-8 rounded-2xl border shadow-sm prose max-w-none ${darkMode ? 'bg-slate-800 border-slate-700 prose-invert' : 'bg-white border-slate-200 prose-slate'}`}>
+                <div className={`flex items-center gap-2 mb-6 pb-4 border-b ${darkMode ? 'text-white border-slate-700' : 'text-slate-900 border-slate-100'}`}>
+                  <FileText className="w-6 h-6" />
+                  <span className="font-bold text-lg">Báo cáo phân tích chi tiết</span>
+                </div>
+                <ReactMarkdown>{analysis.detailedAnalysis}</ReactMarkdown>
+              </div>
+            </div>
+          ) : (
+            <div className={`p-12 text-center rounded-3xl border ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+              <BrainCircuit className="w-16 h-16 text-blue-500 mx-auto mb-4 opacity-50" />
+              <h4 className={`text-lg font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                Chưa có dữ liệu báo cáo phân tích
+              </h4>
+              <p className={`text-sm max-w-md mx-auto mb-6 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                Nhấn nút bên dưới để hệ thống quét toàn bộ kho, các lô hạn dùng và đưa ra báo cáo chẩn đoán toàn diện.
+              </p>
+              <button
+                type="button"
+                onClick={onAnalyze}
+                disabled={isAnalyzing}
+                className="px-8 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all inline-flex items-center gap-2 shadow-lg shadow-blue-500/20"
+              >
+                {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
+                {isAnalyzing ? 'Đang phân tích...' : 'Bắt đầu phân tích ngay'}
+              </button>
             </div>
           )}
-
-          {/* Detailed Analysis Section */}
-          <div className={`p-8 rounded-2xl border shadow-sm prose max-w-none ${darkMode ? 'bg-slate-800 border-slate-700 prose-invert' : 'bg-white border-slate-200 prose-slate'}`}>
-            <div className={`flex items-center gap-2 mb-6 pb-4 border-b ${darkMode ? 'text-white border-slate-700' : 'text-slate-900 border-slate-100'}`}>
-              <FileText className="w-6 h-6" />
-              <span className="font-bold text-lg">Phân tích chi tiết</span>
-            </div>
-            <ReactMarkdown>{analysis.detailedAnalysis}</ReactMarkdown>
-          </div>
         </div>
       )}
-
-      {!analysis && !isAnalyzing && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <AiFeatureCard 
-            title="Dự báo tồn kho" 
-            desc="Cảnh báo các vật tư sắp hết dựa trên tốc độ tiêu thụ thực tế." 
-            darkMode={darkMode}
-          />
-          <AiFeatureCard 
-            title="Phát hiện bất thường" 
-            desc="Tìm ra các sai lệch trong việc sử dụng vật tư văn phòng phẩm và thuốc." 
-            darkMode={darkMode}
-          />
-          <AiFeatureCard 
-            title="Tối ưu hóa nhập hàng" 
-            desc="Đề xuất số lượng nhập hàng tối ưu để tránh lãng phí hoặc thiếu hụt." 
-            darkMode={darkMode}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AiFeatureCard({ title, desc, darkMode }: { title: string, desc: string, darkMode?: boolean }) {
-  return (
-    <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-      <div className={`w-10 h-10 rounded-lg flex items-center justify-center mb-4 ${darkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}>
-        <ChevronRight className="w-6 h-6" />
-      </div>
-      <h4 className={`font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>{title}</h4>
-      <p className={`text-sm leading-relaxed ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{desc}</p>
     </div>
   );
 }
