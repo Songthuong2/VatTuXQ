@@ -44,7 +44,10 @@ import {
   ChevronDown,
   Tag,
   Sparkles,
-  Info
+  Info,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ChevronLeft
 } from 'lucide-react';
 import { GoogleSheetsHub } from './GoogleSheetsHub';
 import { UsersManager, StaffUser } from './UsersManager';
@@ -477,6 +480,23 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebarCollapse = () => {
+    setIsSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
   const [theme, setTheme] = useState<'medical' | 'light' | 'dark'>(() => {
     const saved = localStorage.getItem('theme_mode');
     if (saved === 'medical' || saved === 'light' || saved === 'dark') {
@@ -510,6 +530,22 @@ export default function App() {
   const [globalSearch, setGlobalSearch] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard shortcut Ctrl+B / Cmd+B to toggle sidebar collapse
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        const target = e.target as HTMLElement;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+          return;
+        }
+        e.preventDefault();
+        toggleSidebarCollapse();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -729,9 +765,20 @@ export default function App() {
   // --- AI Analysis ---
   const runAiAnalysis = async () => {
     setIsAnalyzing(true);
-    const result = await analyzeInventory();
-    setAiAnalysis(result);
-    setIsAnalyzing(false);
+    try {
+      const result = await analyzeInventory();
+      if (result) {
+        setAiAnalysis(result);
+        toast.success("Phân tích kho bằng AI hoàn tất!");
+      } else {
+        toast.error("Không thể hoàn tất phân tích. Vui lòng thử lại.");
+      }
+    } catch (err) {
+      console.warn("AI Analysis error:", err);
+      toast.error("Đã xảy ra lỗi trong quá trình phân tích.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   if (loading || (user && !usersLoaded)) {
@@ -887,48 +934,92 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 w-64 h-screen shrink-0 border-r transform transition-transform duration-300 ease-in-out
-        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-        lg:translate-x-0 lg:sticky lg:top-0
+        fixed inset-y-0 left-0 z-50 h-screen shrink-0 border-r transform transition-all duration-300 ease-in-out
+        ${isSidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'}
+        ${isSidebarCollapsed ? 'lg:w-20' : 'lg:w-64'}
+        lg:sticky lg:top-0
         ${darkMode ? 'bg-slate-800 border-slate-700' : 
           isMedical ? 'bg-white border-blue-100 shadow-[2px_0_12px_rgba(26,86,219,0.04)]' : 'bg-white border-slate-200'}
       `}>
         <div className="h-full flex flex-col overflow-hidden">
-          <div className={`p-5 flex items-center justify-between border-b shrink-0 ${
+          {/* Sidebar Header */}
+          <div className={`p-4 flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'justify-between'} border-b shrink-0 transition-all ${
             darkMode ? 'border-slate-700 bg-slate-800' : 
             isMedical ? 'bg-gradient-to-r from-blue-700 to-sky-700 text-white border-blue-800' : 
             'border-slate-100 bg-white'
           }`}>
-            <div className="flex items-center gap-3 min-w-0">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 ${
-                isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
-              }`}>
-                {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
+            {!isSidebarCollapsed ? (
+              <>
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 ${
+                    isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
+                  }`}>
+                    {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
+                  </div>
+                  <div className="min-w-0">
+                    <span className={`font-bold text-base block truncate ${darkMode || isMedical ? 'text-white' : 'text-slate-900'}`}>
+                      Vật tư X Quang
+                    </span>
+                    <span className={`text-[10px] font-semibold tracking-wide uppercase block truncate ${
+                      darkMode ? 'text-slate-400' : isMedical ? 'text-blue-100' : 'text-slate-500'
+                    }`}>
+                      Khoa Chẩn Đoán Hình Ảnh
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  {/* Desktop collapse toggle button */}
+                  <button 
+                    onClick={toggleSidebarCollapse} 
+                    title="Thu gọn menu bên trái (Ctrl+B)"
+                    className={`hidden lg:flex p-1.5 rounded-lg transition-colors cursor-pointer ${
+                      darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
+                      isMedical ? 'text-white/80 hover:bg-white/15 hover:text-white' : 
+                      'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <PanelLeftClose className="w-5 h-5" />
+                  </button>
+                  {/* Mobile drawer close button */}
+                  <button 
+                    onClick={() => setSidebarOpen(false)} 
+                    className={`lg:hidden p-1 rounded-lg transition-colors ${
+                      darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
+                      isMedical ? 'text-white/80 hover:bg-white/10 hover:text-white' : 
+                      'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-2 py-1">
+                <button 
+                  onClick={toggleSidebarCollapse}
+                  title="Mở rộng menu bên trái (Ctrl+B)"
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 cursor-pointer transition-transform hover:scale-105 active:scale-95 ${
+                    isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
+                  }`}
+                >
+                  {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
+                </button>
+                <button 
+                  onClick={toggleSidebarCollapse} 
+                  title="Mở rộng menu bên trái (Ctrl+B)"
+                  className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                    darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
+                    isMedical ? 'text-white/80 hover:bg-white/15 hover:text-white' : 
+                    'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <PanelLeftOpen className="w-4 h-4" />
+                </button>
               </div>
-              <div className="min-w-0">
-                <span className={`font-bold text-base block truncate ${darkMode || isMedical ? 'text-white' : 'text-slate-900'}`}>
-                  Vật tư X Quang
-                </span>
-                <span className={`text-[10px] font-semibold tracking-wide uppercase block truncate ${
-                  darkMode ? 'text-slate-400' : isMedical ? 'text-blue-100' : 'text-slate-500'
-                }`}>
-                  Khoa Chẩn Đoán Hình Ảnh
-                </span>
-              </div>
-            </div>
-            <button 
-              onClick={() => setSidebarOpen(false)} 
-              className={`lg:hidden p-1 rounded-lg transition-colors ${
-                darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
-                isMedical ? 'text-white/80 hover:bg-white/10 hover:text-white' : 
-                'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <X className="w-5 h-5" />
-            </button>
+            )}
           </div>
 
-          <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto custom-scrollbar">
+          <nav className={`flex-1 ${isSidebarCollapsed ? 'px-2' : 'px-4'} py-5 space-y-2 overflow-y-auto custom-scrollbar`}>
             <NavItem 
               icon={<LayoutDashboard />} 
               label="Tổng quan" 
@@ -936,6 +1027,7 @@ export default function App() {
               onClick={() => {setActiveTab('dashboard'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<Package />} 
@@ -944,6 +1036,7 @@ export default function App() {
               onClick={() => {setActiveTab('inventory'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<ArrowLeftRight />} 
@@ -952,6 +1045,7 @@ export default function App() {
               onClick={() => {setActiveTab('transactions'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<ClipboardCheck />} 
@@ -960,6 +1054,7 @@ export default function App() {
               onClick={() => {setActiveTab('audit'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<CalendarRange />} 
@@ -968,6 +1063,7 @@ export default function App() {
               onClick={() => {setActiveTab('planning'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<FileText />} 
@@ -976,6 +1072,7 @@ export default function App() {
               onClick={() => {setActiveTab('reports'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<Calendar />} 
@@ -984,6 +1081,7 @@ export default function App() {
               onClick={() => {setActiveTab('holidays'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<FileSpreadsheet className="text-emerald-500" />} 
@@ -992,6 +1090,7 @@ export default function App() {
               onClick={() => {setActiveTab('google-sheets'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<Users className="text-indigo-500" />} 
@@ -1001,6 +1100,7 @@ export default function App() {
               darkMode={darkMode}
               isMedical={isMedical}
               badge={pendingUsersCount > 0 ? pendingUsersCount : undefined}
+              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<BrainCircuit />} 
@@ -1009,28 +1109,41 @@ export default function App() {
               onClick={() => {setActiveTab('assistant'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
+              isCollapsed={isSidebarCollapsed}
             />
             
             {user.email === 'manhha2@gmail.com' && (
               <button 
                 onClick={() => setShowResetConfirm(true)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all mt-8 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20`}
+                title="Reset dữ liệu"
+                className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center px-2' : 'gap-3 px-4'} py-3 rounded-xl transition-all mt-8 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer`}
               >
-                <RefreshCw className="w-5 h-5" />
-                <span>Reset dữ liệu</span>
+                <RefreshCw className="w-5 h-5 shrink-0" />
+                {!isSidebarCollapsed && <span>Reset dữ liệu</span>}
               </button>
             )}
           </nav>
 
-          <div className={`p-4 border-t shrink-0 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
-            <div className={`flex items-center gap-3 p-3 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
-              <img src={user.photoURL || ''} className="w-10 h-10 rounded-full border-2 border-white shadow-sm" alt="User" />
-              <div className="flex-1 overflow-hidden">
-                <p className={`text-sm font-semibold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>{user.displayName}</p>
-                <p className={`text-xs truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{user.email}</p>
-              </div>
-              <button onClick={handleLogout} className={`p-2 transition-colors ${darkMode ? 'text-slate-400 hover:text-red-400' : 'text-slate-400 hover:text-red-500'}`}>
-                <LogOut className="w-5 h-5" />
+          <div className={`p-3 border-t shrink-0 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
+            <div className={`flex items-center ${isSidebarCollapsed ? 'flex-col gap-2 p-1.5 justify-center' : 'gap-3 p-3'} rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+              <img 
+                src={user.photoURL || ''} 
+                className="w-9 h-9 rounded-full border-2 border-white shadow-sm shrink-0 object-cover" 
+                alt="User" 
+                title={user.displayName || user.email || 'Người dùng'} 
+              />
+              {!isSidebarCollapsed && (
+                <div className="flex-1 overflow-hidden min-w-0">
+                  <p className={`text-sm font-semibold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>{user.displayName}</p>
+                  <p className={`text-xs truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{user.email}</p>
+                </div>
+              )}
+              <button 
+                onClick={handleLogout} 
+                title="Đăng xuất"
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${darkMode ? 'text-slate-400 hover:text-red-400 hover:bg-slate-600' : 'text-slate-400 hover:text-red-500 hover:bg-slate-200'}`}
+              >
+                <LogOut className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
           </div>
@@ -1048,12 +1161,26 @@ export default function App() {
             : 'bg-white border-slate-200 text-slate-900'
         }`}>
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Mobile drawer hamburger button */}
             <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 rounded-xl transition-colors shrink-0 ${
               darkMode ? 'bg-slate-700 text-slate-300' : 
               isMedical ? 'bg-white/15 text-white hover:bg-white/25' : 
               'bg-slate-100 text-slate-600'
             }`}>
               <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
+            </button>
+
+            {/* Desktop sidebar collapse/expand toggle button */}
+            <button 
+              onClick={toggleSidebarCollapse} 
+              title={isSidebarCollapsed ? "Mở rộng menu bên trái (Ctrl+B)" : "Thu gọn menu bên trái (Ctrl+B)"}
+              className={`hidden lg:flex p-2 rounded-xl transition-all shrink-0 cursor-pointer ${
+                darkMode ? 'bg-slate-700/80 hover:bg-slate-700 text-slate-300' : 
+                isMedical ? 'bg-white/15 text-white hover:bg-white/25 active:scale-95' : 
+                'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {isSidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
             </button>
             <div className="flex items-center gap-2 min-w-0">
               {isMedical && (
@@ -1065,7 +1192,7 @@ export default function App() {
                 darkMode || isMedical ? 'text-white' : 'text-slate-900'
               }`}>
                 {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
-                 activeTab === 'inventory' ? 'Quản lý Vật tư' : 
+                 activeTab === 'inventory' ? 'Quản lý Vật tư' :  
                  activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
                  activeTab === 'audit' ? 'Kiểm kê kho' :
                  activeTab === 'planning' ? 'Dự trù vật tư' :
@@ -1457,12 +1584,31 @@ export default function App() {
 
 // --- Sub-components ---
 
-function NavItem({ icon, label, active, onClick, darkMode, isMedical, badge }: { icon: any, label: string, active: boolean, onClick: () => void, darkMode?: boolean, isMedical?: boolean, badge?: number }) {
+function NavItem({ 
+  icon, 
+  label, 
+  active, 
+  onClick, 
+  darkMode, 
+  isMedical, 
+  badge,
+  isCollapsed 
+}: { 
+  icon: any, 
+  label: string, 
+  active: boolean, 
+  onClick: () => void, 
+  darkMode?: boolean, 
+  isMedical?: boolean, 
+  badge?: number,
+  isCollapsed?: boolean 
+}) {
   return (
     <button 
       onClick={onClick}
+      title={isCollapsed ? label : undefined}
       className={`
-        w-full flex items-center justify-between gap-3 px-4 py-3 rounded-xl transition-all
+        w-full flex items-center ${isCollapsed ? 'justify-center px-2 py-3' : 'justify-between px-4 py-3'} rounded-xl transition-all relative group cursor-pointer
         ${active 
           ? (darkMode 
               ? 'bg-blue-900/30 text-blue-400 font-semibold' 
@@ -1476,17 +1622,35 @@ function NavItem({ icon, label, active, onClick, darkMode, isMedical, badge }: {
               : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900')}
       `}
     >
-      <div className="flex items-center gap-3 min-w-0">
+      <div className={`flex items-center gap-3 min-w-0 ${isCollapsed ? 'justify-center' : ''}`}>
         {React.cloneElement(icon, { className: `w-5 h-5 shrink-0 ${active && isMedical ? 'text-white' : ''}` })}
-        <span className="truncate">{label}</span>
+        {!isCollapsed && <span className="truncate">{label}</span>}
       </div>
-      {badge && badge > 0 ? (
+
+      {!isCollapsed && badge && badge > 0 ? (
         <span className={`px-2 py-0.5 text-[11px] font-bold rounded-full shrink-0 ${
           active && isMedical ? 'bg-white text-blue-700' : 'bg-amber-500 text-white'
         }`}>
           {badge}
         </span>
       ) : null}
+
+      {/* When collapsed: show notification badge dot */}
+      {isCollapsed && badge && badge > 0 && (
+        <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-amber-500 rounded-full border-2 border-white dark:border-slate-800" />
+      )}
+
+      {/* Floating tooltip on hover when collapsed on desktop */}
+      {isCollapsed && (
+        <div className="hidden lg:group-hover:flex absolute left-full ml-3 px-3 py-1.5 bg-slate-900/95 text-white text-xs font-semibold rounded-lg shadow-xl whitespace-nowrap z-50 pointer-events-none items-center gap-1.5 backdrop-blur-sm border border-slate-700">
+          <span>{label}</span>
+          {badge && badge > 0 && (
+            <span className="px-1.5 py-0.2 text-[10px] bg-amber-500 text-white rounded-full font-bold">
+              {badge}
+            </span>
+          )}
+        </div>
+      )}
     </button>
   );
 }
@@ -1859,7 +2023,7 @@ function Dashboard({
             </div>
             <div className="h-80 min-h-[320px] w-full">
               {isChartReady && transactionHistory.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%" debounce={100}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} debounce={100}>
                   <AreaChart data={transactionHistory} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
@@ -1923,7 +2087,7 @@ function Dashboard({
             <p className={`text-xs mb-6 ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>Phân loại vật tư theo mức độ an toàn</p>
             <div className="flex-1 min-h-[250px] relative w-full">
               {isChartReady && statusData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%" debounce={100}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} debounce={100}>
                   <PieChart>
                     <Pie
                       data={statusData}
@@ -1985,7 +2149,7 @@ function Dashboard({
             </div>
             <div className="h-96 min-h-[384px] w-full">
               {isChartReady && categoryData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%" debounce={100}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} debounce={100}>
                   <BarChart data={categoryData.slice(0, 5)} layout="vertical" margin={{ left: 20, right: 20 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={darkMode ? "#334155" : "#f1f5f9"} />
                     <XAxis type="number" hide />
@@ -6620,7 +6784,7 @@ function Reports({ transactions, items, categories, departments, holidays, globa
           <div className="flex-1 relative min-h-[300px]">
             {isChartReady && categoryValueData.length > 0 ? (
               <>
-                <ResponsiveContainer width="100%" height="100%" debounce={100}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} debounce={100}>
                   <PieChart>
                     <Pie
                       data={categoryValueData}
@@ -6690,7 +6854,7 @@ function Reports({ transactions, items, categories, departments, holidays, globa
           </div>
           <div className="flex-1 relative min-h-0">
             {isChartReady && itemComparisonData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
                 <BarChart data={itemComparisonData} margin={{ top: 40, right: 10, left: 0, bottom: 60 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={darkMode ? "#334155" : "#f1f5f9"} />
                   <XAxis 
