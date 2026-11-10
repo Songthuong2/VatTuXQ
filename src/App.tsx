@@ -45,8 +45,6 @@ import {
   Tag,
   Sparkles,
   Info,
-  PanelLeftClose,
-  PanelLeftOpen,
   ChevronLeft,
   Send,
   MessageSquare,
@@ -85,7 +83,9 @@ import {
   where
 } from 'firebase/firestore';
 import { analyzeInventory, askAiAssistant } from './geminiService';
+import { parseDateFlexible } from './expertAnalysis';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { toast, Toaster } from 'sonner';
 import { 
   BarChart, 
@@ -485,23 +485,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('sidebar_collapsed') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const toggleSidebarCollapse = () => {
-    setIsSidebarCollapsed(prev => {
-      const next = !prev;
-      try {
-        localStorage.setItem('sidebar_collapsed', String(next));
-      } catch {}
-      return next;
-    });
-  };
   const [theme, setTheme] = useState<'medical' | 'light' | 'dark'>(() => {
     const saved = localStorage.getItem('theme_mode');
     if (saved === 'medical' || saved === 'light' || saved === 'dark') {
@@ -534,18 +517,76 @@ export default function App() {
   const autoRegisteredRef = useRef<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [showMobileSearch, setShowMobileSearch] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Keyboard shortcut Ctrl+B / Cmd+B to toggle sidebar collapse
+  // Real-time live clock for header banner
+  const [liveClock, setLiveClock] = useState(() => {
+    const d = new Date();
+    return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  });
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const d = new Date();
+      setLiveClock(d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Live alert stats for hospital operations banner
+  const bannerAlerts = useMemo(() => {
+    let expired = 0;
+    let lowStock = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    items.forEach(item => {
+      if (item.currentStock <= (item.minStock || 0)) {
+        lowStock++;
+      }
+      if (item.expiryDate) {
+        const parts = item.expiryDate.split(/[-/]/);
+        let exp: Date | null = null;
+        if (parts.length === 3) {
+          if (parts[0].length === 4) {
+            exp = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          } else {
+            exp = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+          }
+        } else {
+          const parsed = new Date(item.expiryDate);
+          if (!isNaN(parsed.getTime())) exp = parsed;
+        }
+        if (exp && exp < today) {
+          expired++;
+        }
+      }
+    });
+    return { expired, lowStock };
+  }, [items]);
+
+  // Keyboard shortcut Ctrl+B / Cmd+B or Escape to toggle / close sidebar, Ctrl+K to search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSidebarOpen(false);
+        setShowSearchResults(false);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setShowSearchResults(true);
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
         const target = e.target as HTMLElement;
         if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
           return;
         }
         e.preventDefault();
-        toggleSidebarCollapse();
+        setSidebarOpen(prev => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -771,7 +812,7 @@ export default function App() {
   const runAiAnalysis = async () => {
     setIsAnalyzing(true);
     try {
-      const result = await analyzeInventory();
+      const result = await analyzeInventory({ items, categories, transactions, holidays });
       if (result) {
         setAiAnalysis(result);
         toast.success("Phân tích kho bằng AI hoàn tất!");
@@ -929,102 +970,59 @@ export default function App() {
       }`}>
       <Toaster position="top-right" richColors />
       
-      {/* Mobile Sidebar Overlay */}
+      {/* Sidebar Backdrop Overlay (All screens) */}
       {isSidebarOpen && (
         <div 
-          className="fixed inset-0 bg-black/20 backdrop-blur-[2px] z-40 lg:hidden transition-opacity duration-300"
+          className="fixed inset-0 bg-black/30 backdrop-blur-[2px] z-40 transition-opacity duration-300"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar Drawer (Slides out from left when clicking ☰ on any screen size) */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 h-screen shrink-0 border-r transform transition-all duration-300 ease-in-out
-        ${isSidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'}
-        ${isSidebarCollapsed ? 'lg:w-20' : 'lg:w-64'}
-        lg:sticky lg:top-0
+        fixed inset-y-0 left-0 z-50 h-screen w-72 max-w-[85vw] shrink-0 border-r transform transition-all duration-300 ease-in-out shadow-2xl
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         ${darkMode ? 'bg-slate-800 border-slate-700' : 
-          isMedical ? 'bg-white border-blue-100 shadow-[2px_0_12px_rgba(26,86,219,0.04)]' : 'bg-white border-slate-200'}
+          isMedical ? 'bg-white border-blue-100 shadow-[4px_0_24px_rgba(26,86,219,0.12)]' : 'bg-white border-slate-200'}
       `}>
         <div className="h-full flex flex-col overflow-hidden">
           {/* Sidebar Header */}
-          <div className={`p-4 flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'justify-between'} border-b shrink-0 transition-all ${
+          <div className={`p-4 flex items-center justify-between border-b shrink-0 transition-all ${
             darkMode ? 'border-slate-700 bg-slate-800' : 
             isMedical ? 'bg-gradient-to-r from-blue-700 to-sky-700 text-white border-blue-800' : 
             'border-slate-100 bg-white'
           }`}>
-            {!isSidebarCollapsed ? (
-              <>
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 ${
-                    isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
-                  }`}>
-                    {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
-                  </div>
-                  <div className="min-w-0">
-                    <span className={`font-bold text-base block truncate ${darkMode || isMedical ? 'text-white' : 'text-slate-900'}`}>
-                      Vật tư X Quang
-                    </span>
-                    <span className={`text-[10px] font-semibold tracking-wide uppercase block truncate ${
-                      darkMode ? 'text-slate-400' : isMedical ? 'text-blue-100' : 'text-slate-500'
-                    }`}>
-                      Khoa Chẩn Đoán Hình Ảnh
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  {/* Desktop collapse toggle button */}
-                  <button 
-                    onClick={toggleSidebarCollapse} 
-                    title="Thu gọn menu bên trái (Ctrl+B)"
-                    className={`hidden lg:flex p-1.5 rounded-lg transition-colors cursor-pointer ${
-                      darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
-                      isMedical ? 'text-white/80 hover:bg-white/15 hover:text-white' : 
-                      'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
-                    }`}
-                  >
-                    <PanelLeftClose className="w-5 h-5" />
-                  </button>
-                  {/* Mobile drawer close button */}
-                  <button 
-                    onClick={() => setSidebarOpen(false)} 
-                    className={`lg:hidden p-1 rounded-lg transition-colors ${
-                      darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
-                      isMedical ? 'text-white/80 hover:bg-white/10 hover:text-white' : 
-                      'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
-                    }`}
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="flex flex-col items-center gap-2 py-1">
-                <button 
-                  onClick={toggleSidebarCollapse}
-                  title="Mở rộng menu bên trái (Ctrl+B)"
-                  className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 cursor-pointer transition-transform hover:scale-105 active:scale-95 ${
-                    isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
-                  }`}
-                >
-                  {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
-                </button>
-                <button 
-                  onClick={toggleSidebarCollapse} 
-                  title="Mở rộng menu bên trái (Ctrl+B)"
-                  className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                    darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
-                    isMedical ? 'text-white/80 hover:bg-white/15 hover:text-white' : 
-                    'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <PanelLeftOpen className="w-4 h-4" />
-                </button>
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md shrink-0 ${
+                isMedical ? 'bg-white text-blue-700 font-bold text-lg' : 'bg-blue-600 text-white'
+              }`}>
+                {isMedical ? '🏥' : <Package className="w-6 h-6 text-white" />}
               </div>
-            )}
+              <div className="min-w-0">
+                <span className={`font-bold text-base block truncate ${darkMode || isMedical ? 'text-white' : 'text-slate-900'}`}>
+                  Vật tư X Quang
+                </span>
+                <span className={`text-[10px] font-semibold tracking-wide uppercase block truncate ${
+                  darkMode ? 'text-slate-400' : isMedical ? 'text-blue-100' : 'text-slate-500'
+                }`}>
+                  Khoa Chẩn Đoán Hình Ảnh
+                </span>
+              </div>
+            </div>
+            <button 
+              onClick={() => setSidebarOpen(false)} 
+              title="Đóng menu (Esc hoặc Ctrl+B)"
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                darkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 
+                isMedical ? 'text-white/80 hover:bg-white/15 hover:text-white' : 
+                'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
 
-          <nav className={`flex-1 ${isSidebarCollapsed ? 'px-2' : 'px-4'} py-5 space-y-2 overflow-y-auto custom-scrollbar`}>
+          <nav className="flex-1 px-4 py-5 space-y-2 overflow-y-auto custom-scrollbar">
             <NavItem 
               icon={<LayoutDashboard />} 
               label="Tổng quan" 
@@ -1032,7 +1030,6 @@ export default function App() {
               onClick={() => {setActiveTab('dashboard'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<Package />} 
@@ -1041,7 +1038,6 @@ export default function App() {
               onClick={() => {setActiveTab('inventory'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<ArrowLeftRight />} 
@@ -1050,7 +1046,6 @@ export default function App() {
               onClick={() => {setActiveTab('transactions'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<ClipboardCheck />} 
@@ -1059,7 +1054,6 @@ export default function App() {
               onClick={() => {setActiveTab('audit'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<CalendarRange />} 
@@ -1068,7 +1062,6 @@ export default function App() {
               onClick={() => {setActiveTab('planning'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<FileText />} 
@@ -1077,7 +1070,6 @@ export default function App() {
               onClick={() => {setActiveTab('reports'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<Calendar />} 
@@ -1086,7 +1078,6 @@ export default function App() {
               onClick={() => {setActiveTab('holidays'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<FileSpreadsheet className="text-emerald-500" />} 
@@ -1095,7 +1086,6 @@ export default function App() {
               onClick={() => {setActiveTab('google-sheets'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<Users className="text-indigo-500" />} 
@@ -1105,7 +1095,6 @@ export default function App() {
               darkMode={darkMode}
               isMedical={isMedical}
               badge={pendingUsersCount > 0 ? pendingUsersCount : undefined}
-              isCollapsed={isSidebarCollapsed}
             />
             <NavItem 
               icon={<BrainCircuit />} 
@@ -1114,35 +1103,32 @@ export default function App() {
               onClick={() => {setActiveTab('assistant'); setSidebarOpen(false);}} 
               darkMode={darkMode}
               isMedical={isMedical}
-              isCollapsed={isSidebarCollapsed}
             />
             
             {user.email === 'manhha2@gmail.com' && (
               <button 
                 onClick={() => setShowResetConfirm(true)}
                 title="Reset dữ liệu"
-                className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center px-2' : 'gap-3 px-4'} py-3 rounded-xl transition-all mt-8 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer`}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all mt-8 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer"
               >
                 <RefreshCw className="w-5 h-5 shrink-0" />
-                {!isSidebarCollapsed && <span>Reset dữ liệu</span>}
+                <span>Reset dữ liệu</span>
               </button>
             )}
           </nav>
 
           <div className={`p-3 border-t shrink-0 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
-            <div className={`flex items-center ${isSidebarCollapsed ? 'flex-col gap-2 p-1.5 justify-center' : 'gap-3 p-3'} rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
+            <div className={`flex items-center gap-3 p-3 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
               <img 
                 src={user.photoURL || ''} 
                 className="w-9 h-9 rounded-full border-2 border-white shadow-sm shrink-0 object-cover" 
                 alt="User" 
                 title={user.displayName || user.email || 'Người dùng'} 
               />
-              {!isSidebarCollapsed && (
-                <div className="flex-1 overflow-hidden min-w-0">
-                  <p className={`text-sm font-semibold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>{user.displayName}</p>
-                  <p className={`text-xs truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{user.email}</p>
-                </div>
-              )}
+              <div className="flex-1 overflow-hidden min-w-0">
+                <p className={`text-sm font-semibold truncate ${darkMode ? 'text-white' : 'text-slate-900'}`}>{user.displayName}</p>
+                <p className={`text-xs truncate ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{user.email}</p>
+              </div>
               <button 
                 onClick={handleLogout} 
                 title="Đăng xuất"
@@ -1158,278 +1144,482 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         {/* Header */}
-        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-3 sm:px-4 lg:px-8 sticky top-0 z-40 transition-colors ${
+        {/* Professional Hospital Executive Banner (Fully Responsive Across All Devices) */}
+        <header className={`shrink-0 border-b relative z-40 transition-all duration-200 w-full ${
           darkMode 
-            ? 'bg-slate-800 border-slate-700 text-white' 
+            ? 'bg-slate-900 border-slate-800 text-white shadow-md' 
             : isMedical 
-            ? 'bg-gradient-to-r from-blue-700 via-blue-600 to-sky-700 text-white border-blue-800 shadow-sm' 
-            : 'bg-white border-slate-200 text-slate-900'
+            ? 'bg-gradient-to-r from-[#072552] via-[#0d3b7a] to-[#1253a4] text-white border-sky-500/25 shadow-[0_4px_24px_rgba(7,37,82,0.32)]' 
+            : 'bg-white border-slate-200 text-slate-900 shadow-sm'
         }`}>
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            {/* Mobile drawer hamburger button */}
-            <button onClick={() => setSidebarOpen(true)} className={`lg:hidden p-2 rounded-xl transition-colors shrink-0 ${
-              darkMode ? 'bg-slate-700 text-slate-300' : 
-              isMedical ? 'bg-white/15 text-white hover:bg-white/25' : 
-              'bg-slate-100 text-slate-600'
-            }`}>
-              <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
-            </button>
+          {/* Subtle medical ambient glow for medical theme */}
+          {isMedical && (
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(56,189,248,0.18),rgba(255,255,255,0))] pointer-events-none" />
+          )}
 
-            {/* Desktop sidebar collapse/expand toggle button */}
-            <button 
-              onClick={toggleSidebarCollapse} 
-              title={isSidebarCollapsed ? "Mở rộng menu bên trái (Ctrl+B)" : "Thu gọn menu bên trái (Ctrl+B)"}
-              className={`hidden lg:flex p-2 rounded-xl transition-all shrink-0 cursor-pointer ${
-                darkMode ? 'bg-slate-700/80 hover:bg-slate-700 text-slate-300' : 
-                isMedical ? 'bg-white/15 text-white hover:bg-white/25 active:scale-95' : 
-                'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {isSidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
-            </button>
-            <div className="flex items-center gap-2 min-w-0">
-              {isMedical && (
-                <span className="hidden sm:inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white/20 text-white text-sm shadow-inner shrink-0" title="Cổng thông tin Y tế Chính thức">
-                  🏥
-                </span>
-              )}
-              <h2 className={`text-base sm:text-lg font-bold capitalize truncate max-w-[200px] sm:max-w-md ${
-                darkMode || isMedical ? 'text-white' : 'text-slate-900'
-              }`}>
-                {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
-                 activeTab === 'inventory' ? 'Quản lý Vật tư' :  
-                 activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
-                 activeTab === 'audit' ? 'Kiểm kê kho' :
-                 activeTab === 'planning' ? 'Dự trù vật tư' :
-                 activeTab === 'reports' ? 'Báo cáo thống kê' : 
-                 activeTab === 'holidays' ? 'Quản lý ngày nghỉ' : 
-                 activeTab === 'google-sheets' ? 'Mẫu & Đồng bộ Google Sheets' :
-                 activeTab === 'users' ? 'Người dùng & Cán bộ' : 'Trợ lý AI Gemini'}
-              </h2>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={() => setActiveTab('google-sheets')}
-              className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                activeTab === 'google-sheets'
-                  ? (isMedical ? 'bg-white text-emerald-700 font-bold shadow-md border-white' : 'bg-emerald-600 text-white border-emerald-600 shadow-sm')
-                  : (darkMode 
-                      ? 'bg-slate-800 border-slate-700 text-emerald-400 hover:bg-slate-700' 
-                      : isMedical
-                      ? 'bg-white/15 border-white/25 text-white hover:bg-white/25'
-                      : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
-              }`}
-              title="Mở Trung tâm Mẫu & Đồng bộ Google Sheets"
-            >
-              <FileSpreadsheet className={`w-3.5 h-3.5 ${isMedical && activeTab !== 'google-sheets' ? 'text-emerald-300' : 'text-emerald-500'}`} />
-              <span>Mẫu Google Sheets CĐHA</span>
-            </button>
-
-            {/* Theme Selector Popover */}
-            <div className="relative" ref={themeMenuRef}>
+          <div className="h-14 sm:h-16 md:h-18 px-2 sm:px-4 lg:px-6 flex items-center justify-between gap-1.5 sm:gap-3 relative w-full">
+            {/* Left Brand Identity Section */}
+            <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1 sm:flex-initial">
+              {/* Hamburger Button ☰ */}
               <button 
-                onClick={() => setShowThemeMenu(!showThemeMenu)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
-                  isMedical 
-                    ? 'bg-white/20 hover:bg-white/30 text-white border-white/30 shadow-sm' 
-                    : darkMode 
-                    ? 'bg-slate-700 border-slate-600 text-amber-300 hover:bg-slate-600' 
-                    : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                onClick={() => setSidebarOpen(prev => !prev)} 
+                title="Mở menu điều hướng hệ thống (Ctrl+B)"
+                className={`p-1.5 sm:p-2.5 rounded-xl transition-all shrink-0 cursor-pointer ${
+                  darkMode 
+                    ? 'bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white border border-slate-700' 
+                    : isMedical 
+                    ? 'bg-white/12 hover:bg-white/22 active:scale-95 text-white border border-white/20 shadow-sm' 
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
                 }`}
-                title="Đổi chủ đề giao diện (Chuẩn Y Tế / Sáng / Tối)"
               >
-                {theme === 'medical' ? (
-                  <>
-                    <span className="text-sm">🏥</span>
-                    <span className="hidden sm:inline">Chuẩn Y Tế</span>
-                  </>
-                ) : theme === 'dark' ? (
-                  <>
-                    <Moon className="w-3.5 h-3.5 text-amber-300" />
-                    <span className="hidden sm:inline">Giao diện Tối</span>
-                  </>
-                ) : (
-                  <>
-                    <Sun className="w-3.5 h-3.5 text-amber-500" />
-                    <span className="hidden sm:inline">Giao diện Sáng</span>
-                  </>
-                )}
-                <ChevronDown className="w-3 h-3 opacity-70 ml-0.5" />
+                <Menu className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
 
-              {showThemeMenu && (
-                <div className={`absolute right-0 mt-2 w-72 rounded-2xl shadow-2xl border p-2 z-50 text-left ${
-                  darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-                }`}>
-                  <div className={`px-3 py-2 text-[10px] font-bold uppercase tracking-wider border-b ${
-                    darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-400 border-slate-100'
+              {/* Department Crest / Logo */}
+              <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 shadow-md transition-transform ${
+                isMedical 
+                  ? 'bg-gradient-to-br from-white to-blue-50 text-blue-700 border border-white/50 text-lg sm:text-xl font-bold shadow-[0_2px_8px_rgba(0,0,0,0.15)]' 
+                  : darkMode 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-blue-600 text-white'
+              }`}>
+                {isMedical ? '🏥' : <Package className="w-4 h-4 sm:w-6 sm:h-6 text-white" />}
+              </div>
+
+              {/* Brand Hierarchy Titles with Adaptive Truncation */}
+              <div className="min-w-0 overflow-hidden">
+                <div className="flex items-center gap-1.5 leading-none mb-0.5 sm:mb-1">
+                  <span className={`text-[9px] sm:text-[11px] font-bold tracking-wider uppercase truncate ${
+                    isMedical ? 'text-sky-200' : darkMode ? 'text-slate-400' : 'text-slate-500'
                   }`}>
-                    Chọn giao diện hệ thống
-                  </div>
-                  
-                  {/* Option 1: Chuẩn Y Tế (Mặc định) */}
-                  <button
-                    onClick={() => {
-                      setTheme('medical');
-                      setShowThemeMenu(false);
-                    }}
-                    className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
-                      theme === 'medical'
-                        ? (darkMode ? 'bg-blue-900/40 text-blue-300 border border-blue-700/60' : 'bg-blue-50 text-blue-900 border border-blue-200')
-                        : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-sky-500 text-white flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
-                      🏥
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold">Chuẩn Y Tế</span>
-                        <span className="text-[10px] px-1.5 py-0.2 rounded-md font-bold bg-blue-600 text-white">Mặc định</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
-                        Xanh & Trắng chuẩn website y tế chính thức, giao diện bệnh viện
-                      </p>
-                    </div>
-                    {theme === 'medical' && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-1" />}
-                  </button>
-
-                  {/* Option 2: Giao diện Sáng */}
-                  <button
-                    onClick={() => {
-                      setTheme('light');
-                      setShowThemeMenu(false);
-                    }}
-                    className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
-                      theme === 'light'
-                        ? (darkMode ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-900 border border-slate-300')
-                        : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-600 border border-amber-200 flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
-                      <Sun className="w-4 h-4" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-bold block">Giao diện Sáng (Light)</span>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
-                        Tone xám sáng trung tính tiêu chuẩn
-                      </p>
-                    </div>
-                    {theme === 'light' && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-1" />}
-                  </button>
-
-                  {/* Option 3: Giao diện Tối */}
-                  <button
-                    onClick={() => {
-                      setTheme('dark');
-                      setShowThemeMenu(false);
-                    }}
-                    className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
-                      theme === 'dark'
-                        ? 'bg-slate-700 text-white border border-slate-600'
-                        : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-slate-900 text-amber-300 border border-slate-700 flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
-                      <Moon className="w-4 h-4" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-bold block">Giao diện Tối (Dark)</span>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
-                        Tối ưu cho phòng đọc phim X-Quang & làm việc ban đêm
-                      </p>
-                    </div>
-                    {theme === 'dark' && <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0 mt-1" />}
-                  </button>
+                    <span className="inline sm:hidden">KHOA CĐHA</span>
+                    <span className="hidden sm:inline">KHOA CHẨN ĐOÁN HÌNH ẢNH</span>
+                  </span>
+                  <span className={`hidden xl:inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide shrink-0 ${
+                    isMedical 
+                      ? 'bg-emerald-400/20 text-emerald-300 border border-emerald-400/30' 
+                      : darkMode 
+                      ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' 
+                      : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                  }`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Trực tuyến 24/7
+                  </span>
                 </div>
+                <div className="flex items-center gap-1.5 leading-tight">
+                  <h1 className={`text-xs sm:text-base md:text-lg font-black tracking-tight truncate ${
+                    darkMode || isMedical ? 'text-white' : 'text-slate-900'
+                  }`}>
+                    VẬT TƯ X-QUANG & CĐHA
+                  </h1>
+                  <span className={`hidden md:inline font-light ${isMedical ? 'text-sky-300/40' : 'text-slate-300'}`}>/</span>
+                  <span className={`hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold truncate ${
+                    isMedical 
+                      ? 'bg-white/15 text-white border border-white/20' 
+                      : darkMode 
+                      ? 'bg-slate-800 text-slate-300 border border-slate-700' 
+                      : 'bg-slate-100 text-slate-700 border border-slate-200'
+                  }`}>
+                    {activeTab === 'dashboard' ? 'Bảng điều khiển' : 
+                     activeTab === 'inventory' ? 'Quản lý Vật tư' :  
+                     activeTab === 'transactions' ? 'Nhập/Xuất Tồn' : 
+                     activeTab === 'audit' ? 'Kiểm kê kho' :
+                     activeTab === 'planning' ? 'Dự trù vật tư' :
+                     activeTab === 'reports' ? 'Báo cáo thống kê' : 
+                     activeTab === 'holidays' ? 'Quản lý ngày nghỉ' : 
+                     activeTab === 'google-sheets' ? 'Mẫu & Đồng bộ Sheets' :
+                     activeTab === 'users' ? 'Người dùng & Cán bộ' : 'Trợ lý AI Gemini'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Center Operational Live Clock & Alerts (Desktop only >= 1400px) */}
+            <div className={`hidden 2xl:flex items-center gap-3 px-3.5 py-1.5 rounded-xl border text-xs backdrop-blur-sm shadow-inner shrink-0 ${
+              isMedical 
+                ? 'bg-white/10 border-white/15 text-white' 
+                : darkMode 
+                ? 'bg-slate-800/80 border-slate-700 text-slate-200' 
+                : 'bg-slate-100/90 border-slate-200 text-slate-700'
+            }`}>
+              <div className="flex items-center gap-1.5 font-mono font-bold tracking-wide">
+                <Clock className={`w-3.5 h-3.5 ${isMedical ? 'text-sky-300' : 'text-blue-500'}`} />
+                <span>{liveClock}</span>
+              </div>
+              <div className={`h-3 w-px ${isMedical ? 'bg-white/20' : darkMode ? 'bg-slate-700' : 'bg-slate-300'}`} />
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <span className="opacity-90">Tổng kho: <b>{items.length}</b> vật tư</span>
+              </div>
+              {(bannerAlerts.expired > 0 || bannerAlerts.lowStock > 0) && (
+                <>
+                  <div className={`h-3 w-px ${isMedical ? 'bg-white/20' : darkMode ? 'bg-slate-700' : 'bg-slate-300'}`} />
+                  <button 
+                    onClick={() => setActiveTab('inventory')}
+                    className={`flex items-center gap-1 text-[11px] font-bold px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                      isMedical 
+                        ? 'bg-amber-400/25 text-amber-200 hover:bg-amber-400/35 border border-amber-300/40' 
+                        : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                    }`}
+                    title="Xem chi tiết các mặt hàng cần cảnh báo trong kho"
+                  >
+                    <AlertCircle className="w-3 h-3 text-amber-300 shrink-0" />
+                    <span>
+                      {bannerAlerts.expired > 0 ? `${bannerAlerts.expired} hết hạn` : ''}
+                      {bannerAlerts.expired > 0 && bannerAlerts.lowStock > 0 ? ' · ' : ''}
+                      {bannerAlerts.lowStock > 0 ? `${bannerAlerts.lowStock} sắp hết` : ''}
+                    </span>
+                  </button>
+                </>
               )}
             </div>
 
-            <div className="relative hidden sm:block" ref={searchRef}>
-              <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 ${
-                isMedical ? 'text-blue-200' : darkMode ? 'text-slate-500' : 'text-slate-400'
-              }`} />
-              <input 
-                type="text" 
-                placeholder="Tìm kiếm vật tư..." 
-                value={globalSearch}
-                onChange={(e) => {
-                  setGlobalSearch(e.target.value);
-                  setShowSearchResults(true);
-                }}
-                onFocus={() => setShowSearchResults(true)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    setActiveTab('inventory');
-                    setShowSearchResults(false);
-                  }
-                }}
-                className={`pl-10 pr-10 py-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 w-64 border-none transition-all ${
-                  isMedical
-                    ? 'bg-white/15 text-white placeholder-blue-100 focus:bg-white focus:text-slate-900 focus:placeholder-slate-400'
-                    : darkMode 
-                    ? 'bg-slate-700 text-white placeholder-slate-500' 
-                    : 'bg-slate-100 text-slate-900 placeholder-slate-400'
+            {/* Right Tools & Profile Zone (Strictly Sized & Non-Overflowing) */}
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              {/* Mobile Search Toggle Button (< md) */}
+              <button 
+                onClick={() => setShowMobileSearch(prev => !prev)}
+                title="Tìm kiếm vật tư"
+                className={`md:hidden p-1.5 sm:p-2 rounded-xl transition-all border shrink-0 cursor-pointer ${
+                  showMobileSearch 
+                    ? 'bg-white text-blue-700 shadow-sm border-white' 
+                    : (isMedical ? 'bg-white/12 text-white border-white/20 hover:bg-white/22' : darkMode ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-slate-100 text-slate-700 border-slate-200')
                 }`}
-              />
-              {globalSearch && (
+              >
+                <Search className="w-4 h-4" />
+              </button>
+
+              {/* Google Sheets Hub Shortcut (visible on xl+ screens) */}
+              <button
+                onClick={() => setActiveTab('google-sheets')}
+                className={`hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer shrink-0 ${
+                  activeTab === 'google-sheets'
+                    ? (isMedical ? 'bg-white text-emerald-700 font-extrabold shadow-md border-white' : 'bg-emerald-600 text-white border-emerald-600 shadow-sm')
+                    : (darkMode 
+                        ? 'bg-slate-800 border-slate-700 text-emerald-400 hover:bg-slate-700' 
+                        : isMedical
+                        ? 'bg-white/12 border-white/20 text-white hover:bg-white/22 shadow-sm'
+                        : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
+                }`}
+                title="Mở Trung tâm Mẫu & Đồng bộ Google Sheets"
+              >
+                <FileSpreadsheet className={`w-3.5 h-3.5 ${isMedical && activeTab !== 'google-sheets' ? 'text-emerald-300' : 'text-emerald-500'}`} />
+                <span className="hidden 2xl:inline">Mẫu Google Sheets CĐHA</span>
+                <span className="inline 2xl:hidden">Mẫu Sheets</span>
+              </button>
+
+              {/* AI Assistant Quick Trigger (visible on 2xl screens) */}
+              <button
+                onClick={() => setActiveTab('assistant')}
+                className={`hidden 2xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer shrink-0 ${
+                  activeTab === 'assistant'
+                    ? (isMedical ? 'bg-white text-blue-800 shadow-md border-white' : 'bg-blue-600 text-white')
+                    : (darkMode
+                        ? 'bg-slate-800 border-slate-700 text-purple-300 hover:bg-slate-700'
+                        : isMedical
+                        ? 'bg-white/12 border-white/20 text-white hover:bg-white/22 shadow-sm'
+                        : 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100')
+                }`}
+                title="Mở Trợ lý AI Phân tích Kho Chẩn đoán hình ảnh"
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${isMedical ? 'text-amber-300' : 'text-purple-500'}`} />
+                <span>Trợ lý AI</span>
+              </button>
+
+              {/* Theme Selector Popover (Responsive: Icon-only on mobile/tablet, Icon + Text on lg+) */}
+              <div className="relative shrink-0" ref={themeMenuRef}>
                 <button 
-                  onClick={() => {
-                    setGlobalSearch('');
-                    setShowSearchResults(false);
-                  }}
-                  className={`absolute right-3 top-1/2 -translate-y-1/2 ${
-                    isMedical ? 'text-blue-100 hover:text-white' : 'text-slate-400 hover:text-slate-600'
+                  onClick={() => setShowThemeMenu(!showThemeMenu)}
+                  className={`flex items-center gap-1 sm:gap-1.5 p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer shrink-0 ${
+                    isMedical 
+                      ? 'bg-white/15 hover:bg-white/25 text-white border-white/25 shadow-sm' 
+                      : darkMode 
+                      ? 'bg-slate-800 border-slate-700 text-amber-300 hover:bg-slate-700' 
+                      : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
                   }`}
+                  title="Đổi chủ đề giao diện (Chuẩn Y Tế / Sáng / Tối)"
                 >
-                  <X className="w-4 h-4" />
+                  {theme === 'medical' ? (
+                    <>
+                      <span className="text-sm">🏥</span>
+                      <span className="hidden lg:inline">Chuẩn Y Tế</span>
+                    </>
+                  ) : theme === 'dark' ? (
+                    <>
+                      <Moon className="w-3.5 h-3.5 text-amber-300" />
+                      <span className="hidden lg:inline">Giao diện Tối</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sun className="w-3.5 h-3.5 text-amber-500" />
+                      <span className="hidden lg:inline">Giao diện Sáng</span>
+                    </>
+                  )}
+                  <ChevronDown className="w-3 h-3 opacity-70 ml-0.5" />
                 </button>
-              )}
-              {globalSearch && showSearchResults && (
-                <div className={`absolute top-full left-0 right-0 mt-2 rounded-lg shadow-xl border max-h-96 overflow-y-auto z-50 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-                  <div className={`p-2 text-xs font-medium border-b ${darkMode ? 'text-slate-400 border-slate-700 bg-slate-800/50' : 'text-slate-500 border-slate-100 bg-slate-50'}`}>
-                    Kết quả tìm kiếm ({items.filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase())).length})
+
+                {showThemeMenu && (
+                  <div className={`absolute right-0 mt-2 w-72 rounded-2xl shadow-2xl border p-2 z-50 text-left ${
+                    darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+                  }`}>
+                    <div className={`px-3 py-2 text-[10px] font-bold uppercase tracking-wider border-b ${
+                      darkMode ? 'text-slate-400 border-slate-700' : 'text-slate-400 border-slate-100'
+                    }`}>
+                      Chọn giao diện hệ thống
+                    </div>
+                    
+                    {/* Option 1: Chuẩn Y Tế (Mặc định) */}
+                    <button
+                      onClick={() => {
+                        setTheme('medical');
+                        setShowThemeMenu(false);
+                      }}
+                      className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
+                        theme === 'medical'
+                          ? (darkMode ? 'bg-blue-900/40 text-blue-300 border border-blue-700/60' : 'bg-blue-50 text-blue-900 border border-blue-200')
+                          : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
+                      }`}
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-sky-500 text-white flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
+                        🏥
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold">Chuẩn Y Tế</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded-md font-bold bg-blue-600 text-white">Mặc định</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                          Xanh & Trắng chuẩn website y tế chính thức, giao diện bệnh viện
+                        </p>
+                      </div>
+                      {theme === 'medical' && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-1" />}
+                    </button>
+
+                    {/* Option 2: Giao diện Sáng */}
+                    <button
+                      onClick={() => {
+                        setTheme('light');
+                        setShowThemeMenu(false);
+                      }}
+                      className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
+                        theme === 'light'
+                          ? (darkMode ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-900 border border-slate-300')
+                          : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
+                      }`}
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-600 border border-amber-200 flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
+                        <Sun className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs font-bold block">Giao diện Sáng (Light)</span>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                          Tone xám sáng trung tính tiêu chuẩn
+                        </p>
+                      </div>
+                      {theme === 'light' && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-1" />}
+                    </button>
+
+                    {/* Option 3: Giao diện Tối */}
+                    <button
+                      onClick={() => {
+                        setTheme('dark');
+                        setShowThemeMenu(false);
+                      }}
+                      className={`w-full flex items-start gap-3 p-2.5 rounded-xl text-left transition-all mt-1 cursor-pointer ${
+                        theme === 'dark'
+                          ? 'bg-slate-700 text-white border border-slate-600'
+                          : (darkMode ? 'hover:bg-slate-700 text-slate-300' : 'hover:bg-slate-50 text-slate-700')
+                      }`}
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-slate-900 text-amber-300 border border-slate-700 flex items-center justify-center text-sm font-bold shadow-sm shrink-0">
+                        <Moon className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs font-bold block">Giao diện Tối (Dark)</span>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                          Tối ưu cho phòng đọc phim X-Quang & làm việc ban đêm
+                        </p>
+                      </div>
+                      {theme === 'dark' && <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0 mt-1" />}
+                    </button>
                   </div>
-                  {items
-                    .filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase()))
-                    .slice(0, 10)
-                    .map(item => (
-                      <button
-                        key={item.id}
+                )}
+              </div>
+
+              {/* Global Search Bar (Tablet & Desktop: md+) */}
+              <div className="relative hidden md:block shrink-0" ref={searchRef}>
+                <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
+                  isMedical ? 'text-sky-200' : darkMode ? 'text-slate-400' : 'text-slate-400'
+                }`} />
+                <input 
+                  ref={searchInputRef}
+                  type="text" 
+                  placeholder="Tìm vật tư... (Ctrl+K)" 
+                  value={globalSearch}
+                  onChange={(e) => {
+                    setGlobalSearch(e.target.value);
+                    setShowSearchResults(true);
+                  }}
+                  onFocus={() => setShowSearchResults(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      setActiveTab('inventory');
+                      setShowSearchResults(false);
+                    }
+                  }}
+                  className={`pl-8 pr-11 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm focus:outline-none transition-all w-36 md:w-44 lg:w-52 xl:w-60 border ${
+                    isMedical
+                      ? 'bg-white/15 text-white placeholder-sky-200/80 border-white/20 focus:bg-white focus:text-slate-900 focus:placeholder-slate-400 focus:ring-2 focus:ring-sky-300 shadow-inner'
+                      : darkMode 
+                      ? 'bg-slate-800 text-white placeholder-slate-500 border-slate-700 focus:ring-2 focus:ring-blue-500' 
+                      : 'bg-slate-100 text-slate-900 placeholder-slate-400 border-slate-200 focus:bg-white focus:ring-2 focus:ring-blue-500 shadow-inner'
+                  }`}
+                />
+                {globalSearch ? (
+                  <button 
+                    onClick={() => {
+                      setGlobalSearch('');
+                      setShowSearchResults(false);
+                    }}
+                    className={`absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded cursor-pointer ${
+                      isMedical ? 'text-sky-100 hover:text-white' : 'text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-mono px-1 py-0.5 rounded border pointer-events-none ${
+                    isMedical 
+                      ? 'bg-white/15 text-sky-200 border-white/20' 
+                      : darkMode 
+                      ? 'bg-slate-700 text-slate-400 border-slate-600' 
+                      : 'bg-slate-200 text-slate-500 border-slate-300'
+                  }`}>
+                    ⌘K
+                  </span>
+                )}
+                {globalSearch && showSearchResults && (
+                  <div className={`absolute top-full left-0 right-0 mt-2 rounded-xl shadow-2xl border max-h-96 overflow-y-auto z-50 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+                    <div className={`p-2.5 text-xs font-bold border-b ${darkMode ? 'text-slate-400 border-slate-700 bg-slate-800/80' : 'text-slate-500 border-slate-100 bg-slate-50'}`}>
+                      Kết quả tìm kiếm ({items.filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase())).length})
+                    </div>
+                    {items
+                      .filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase()))
+                      .slice(0, 10)
+                      .map(item => (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            setActiveTab('inventory');
+                            setShowSearchResults(false);
+                          }}
+                          className={`w-full text-left px-4 py-2.5 transition-colors flex items-center justify-between group border-b last:border-0 ${darkMode ? 'border-slate-700/60 hover:bg-slate-700' : 'border-slate-100 hover:bg-blue-50/70'}`}
+                        >
+                          <div>
+                            <p className={`text-sm font-semibold ${darkMode ? 'text-slate-200 group-hover:text-blue-400' : 'text-slate-800 group-hover:text-blue-600'}`}>{item.name}</p>
+                            <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>{categories.find(c => c.id === item.categoryId)?.name || 'Chưa phân loại'}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className={`text-xs font-bold ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>{formatQty(item.currentStock)} {item.unit}</p>
+                            <p className={`text-[10px] font-semibold ${item.currentStock <= item.minStock ? 'text-red-500' : 'text-emerald-600'}`}>
+                              {item.currentStock <= item.minStock ? 'Sắp hết' : 'Ổn định'}
+                            </p>
+                          </div>
+                        </button>
+                      ))}
+                    {items.filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase())).length > 10 && (
+                      <button 
                         onClick={() => {
                           setActiveTab('inventory');
                           setShowSearchResults(false);
                         }}
-                        className={`w-full text-left px-4 py-2 transition-colors flex items-center justify-between group ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-blue-50'}`}
+                        className={`w-full py-2.5 text-center text-xs font-bold ${darkMode ? 'text-blue-400 hover:bg-slate-700' : 'text-blue-600 hover:bg-blue-50'}`}
                       >
-                        <div>
-                          <p className={`text-sm font-medium ${darkMode ? 'text-slate-200 group-hover:text-blue-400' : 'text-slate-700 group-hover:text-blue-600'}`}>{item.name}</p>
-                          <p className={`text-xs ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{categories.find(c => c.id === item.categoryId)?.name || 'Chưa phân loại'}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className={`text-xs font-bold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>{formatQty(item.currentStock)} {item.unit}</p>
-                          <p className={`text-[10px] ${item.currentStock <= item.minStock ? 'text-red-500' : 'text-green-500'}`}>
-                            {item.currentStock <= item.minStock ? 'Sắp hết' : 'Ổn định'}
-                          </p>
-                        </div>
+                        Xem tất cả ({items.filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase())).length}) kết quả
                       </button>
-                    ))}
-                  {items.filter(i => i.name.toLowerCase().includes(globalSearch.toLowerCase())).length > 10 && (
-                    <button 
-                      onClick={() => {
-                        setActiveTab('inventory');
-                        setShowSearchResults(false);
-                      }}
-                      className={`w-full py-2 text-center text-xs font-medium ${darkMode ? 'text-blue-400 hover:bg-slate-700' : 'text-blue-600 hover:bg-blue-50'}`}
-                    >
-                      Xem tất cả kết quả
-                    </button>
-                  )}
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Quick User Card on Banner - always fully visible & shrink-0 */}
+              <div className={`flex items-center gap-1.5 sm:gap-2 pl-1.5 sm:pl-2.5 border-l shrink-0 ${
+                isMedical ? 'border-white/20' : darkMode ? 'border-slate-700' : 'border-slate-200'
+              }`}>
+                <img 
+                  src={user.photoURL || ''} 
+                  alt={user.displayName || 'User'} 
+                  className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full border-2 shadow-sm object-cover shrink-0 ${
+                    isMedical ? 'border-white/80' : darkMode ? 'border-slate-700' : 'border-white'
+                  }`}
+                  title={`${user.displayName || 'Cán bộ'} (${user.email || ''})`} 
+                />
+                <div className="hidden 2xl:block text-left text-xs leading-tight min-w-0 max-w-[100px]">
+                  <p className={`font-bold truncate ${darkMode || isMedical ? 'text-white' : 'text-slate-900'}`}>
+                    {user.displayName || 'Cán bộ Y tế'}
+                  </p>
+                  <p className={`text-[10px] truncate ${isMedical ? 'text-sky-200' : darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {user.email === 'manhha2@gmail.com' ? 'Quản trị viên' : 'Khoa CĐHA'}
+                  </p>
                 </div>
-              )}
+                <button 
+                  onClick={handleLogout} 
+                  title="Đăng xuất khỏi hệ thống"
+                  className={`p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                    isMedical 
+                      ? 'bg-white/10 hover:bg-red-500/30 text-white/90 hover:text-white border border-white/15' 
+                      : darkMode 
+                      ? 'bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-slate-700' 
+                      : 'bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 border border-slate-200'
+                  }`}
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* Mobile Collapsible Search Dropdown (< md) */}
+          {showMobileSearch && (
+            <div className={`md:hidden px-3 py-2 border-t flex items-center gap-2 relative z-50 ${
+              darkMode ? 'bg-slate-800 border-slate-700' : isMedical ? 'bg-[#082855] border-sky-400/30' : 'bg-slate-50 border-slate-200'
+            }`}>
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-sky-200 pointer-events-none" />
+                <input 
+                  type="text" 
+                  placeholder="Tìm kiếm vật tư, hóa chất, mã kho..."
+                  autoFocus
+                  value={globalSearch}
+                  onChange={(e) => {
+                    setGlobalSearch(e.target.value);
+                    setShowSearchResults(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      setActiveTab('inventory');
+                      setShowSearchResults(false);
+                      setShowMobileSearch(false);
+                    }
+                  }}
+                  className="w-full pl-9 pr-8 py-2 rounded-xl text-xs bg-white/20 text-white placeholder-sky-200/80 border border-white/30 focus:outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                {globalSearch && (
+                  <button 
+                    onClick={() => setGlobalSearch('')} 
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sky-200 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <button 
+                onClick={() => setShowMobileSearch(false)}
+                className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-white/10 text-white hover:bg-white/20 border border-white/20 cursor-pointer shrink-0"
+              >
+                Đóng
+              </button>
+            </div>
+          )}
         </header>
 
         {/* Scrollable Area */}
@@ -3187,7 +3377,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
             const dept = departments.find(d => d.id === item.departmentId);
             const isLow = item.currentStock <= item.minStock;
             const now = new Date();
-            const expiryDate = item.expiryDate ? new Date(item.expiryDate) : null;
+            const expiryDate = parseDateFlexible(item.expiryDate);
             const isExpired = expiryDate && expiryDate < now;
             const isNearingExpiry = expiryDate && 
               (expiryDate.getTime() - now.getTime()) < (30 * 24 * 60 * 60 * 1000) &&
@@ -3380,7 +3570,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 const category = categories.find(c => c.id === item.categoryId);
                 const isLow = item.currentStock <= item.minStock;
                 const now = new Date();
-                const expiryDate = item.expiryDate ? new Date(item.expiryDate) : null;
+                const expiryDate = parseDateFlexible(item.expiryDate);
                 const isExpired = expiryDate && expiryDate < now;
                 const isNearingExpiry = expiryDate && 
                   (expiryDate.getTime() - now.getTime()) < (30 * 24 * 60 * 60 * 1000) &&
@@ -7409,7 +7599,48 @@ function AiAssistant({
                           <p className="whitespace-pre-wrap font-medium">{m.text}</p>
                         ) : (
                           <div className={`prose max-w-none text-sm ${darkMode ? 'prose-invert text-slate-100' : 'text-slate-800'}`}>
-                            <ReactMarkdown>{m.text}</ReactMarkdown>
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                table: ({ node, ...props }) => (
+                                  <div className="my-3 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-800/90">
+                                    <table className="w-full text-left text-xs border-collapse divide-y divide-slate-200 dark:divide-slate-700 min-w-[550px]" {...props} />
+                                  </div>
+                                ),
+                                thead: ({ node, ...props }) => (
+                                  <thead className="bg-slate-100 dark:bg-slate-700/80 text-slate-800 dark:text-slate-100 font-bold border-b border-slate-200 dark:border-slate-600" {...props} />
+                                ),
+                                th: ({ node, ...props }) => (
+                                  <th className="px-3 py-2.5 font-bold uppercase tracking-wider text-[11px] whitespace-nowrap text-slate-700 dark:text-slate-200" {...props} />
+                                ),
+                                tbody: ({ node, ...props }) => (
+                                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60" {...props} />
+                                ),
+                                tr: ({ node, ...props }) => (
+                                  <tr className="hover:bg-blue-50/40 dark:hover:bg-slate-700/40 transition-colors odd:bg-transparent even:bg-slate-50/50 dark:even:bg-slate-800/40" {...props} />
+                                ),
+                                td: ({ node, ...props }) => (
+                                  <td className="px-3 py-2 text-slate-700 dark:text-slate-200 text-xs whitespace-nowrap" {...props} />
+                                ),
+                                p: ({ node, ...props }) => (
+                                  <p className="my-1.5 leading-relaxed" {...props} />
+                                ),
+                                ul: ({ node, ...props }) => (
+                                  <ul className="my-2 space-y-1 pl-5 list-disc" {...props} />
+                                ),
+                                ol: ({ node, ...props }) => (
+                                  <ol className="my-2 space-y-1 pl-5 list-decimal" {...props} />
+                                ),
+                                li: ({ node, ...props }) => (
+                                  <li className="leading-relaxed" {...props} />
+                                ),
+                                h3: ({ node, ...props }) => (
+                                  <h3 className="text-base font-bold text-slate-900 dark:text-white mt-3 mb-2 flex items-center gap-1.5" {...props} />
+                                ),
+                              }}
+                            >
+                              {m.text}
+                            </ReactMarkdown>
                           </div>
                         )}
                       </div>
@@ -7606,7 +7837,7 @@ function AiAssistant({
                   <FileText className="w-6 h-6" />
                   <span className="font-bold text-lg">Báo cáo phân tích chi tiết</span>
                 </div>
-                <ReactMarkdown>{analysis.detailedAnalysis}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis.detailedAnalysis}</ReactMarkdown>
               </div>
             </div>
           ) : (

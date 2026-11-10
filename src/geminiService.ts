@@ -2,25 +2,49 @@ import { collection, query, getDocs, limit, orderBy } from "firebase/firestore";
 import { db } from "./firebase";
 import { generateExpertInventoryAnalysis, generateExpertChatAnswer, AnalysisResult } from "./expertAnalysis";
 
-export async function analyzeInventory(): Promise<AnalysisResult> {
-  let items: Record<string, any>[] = [];
-  let transactions: Record<string, any>[] = [];
-  let holidays: Record<string, any>[] = [];
+export async function analyzeInventory(
+  cachedData?: {
+    items?: Record<string, any>[];
+    categories?: Record<string, any>[];
+    transactions?: Record<string, any>[];
+    holidays?: Record<string, any>[];
+  }
+): Promise<AnalysisResult> {
+  let items: Record<string, any>[] = cachedData?.items || [];
+  let categories: Record<string, any>[] = cachedData?.categories || [];
+  let transactions: Record<string, any>[] = cachedData?.transactions || [];
+  let holidays: Record<string, any>[] = cachedData?.holidays || [];
 
-  // Lấy dữ liệu tồn kho hiện tại từ Firestore
-  try {
-    const itemsSnapshot = await getDocs(collection(db, "items"));
-    items = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  // Lấy dữ liệu tồn kho hiện tại từ Firestore nếu chưa có sẵn trong RAM
+  if (items.length === 0) {
+    try {
+      const itemsSnapshot = await getDocs(collection(db, "items"));
+      items = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    const transactionsSnapshot = await getDocs(
-      query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(50))
-    );
-    transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
+      const categoriesSnapshot = await getDocs(collection(db, "categories"));
+      categories = categoriesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    const holidaysSnapshot = await getDocs(collection(db, "holidays"));
-    holidays = holidaysSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
-  } catch (dbErr) {
-    console.warn("Could not query Firestore for AI analysis, using empty or local state:", dbErr);
+      const transactionsSnapshot = await getDocs(
+        query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(50))
+      );
+      transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
+
+      const holidaysSnapshot = await getDocs(collection(db, "holidays"));
+      holidays = holidaysSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
+    } catch (dbErr) {
+      console.warn("Could not query Firestore for AI analysis, using empty or local state:", dbErr);
+    }
+  }
+
+  // Gắn tên danh mục nếu có
+  if (categories.length > 0) {
+    items = items.map(i => {
+      const cat = categories.find(c => c.id === i.categoryId);
+      return {
+        ...i,
+        categoryName: cat?.name || i.category || '',
+      };
+    });
   }
 
   // Thử gọi endpoint phân tích AI trên server (Node.js Express / Gemini backend)
@@ -32,6 +56,7 @@ export async function analyzeInventory(): Promise<AnalysisResult> {
       },
       body: JSON.stringify({
         items,
+        categories,
         transactions,
         holidays,
       }),
@@ -48,7 +73,7 @@ export async function analyzeInventory(): Promise<AnalysisResult> {
   }
 
   // Fallback an toàn tuyệt đối: Luôn trả về kết quả phân tích chuyên gia đầy đủ
-  return generateExpertInventoryAnalysis(items, transactions, holidays);
+  return generateExpertInventoryAnalysis(items, transactions, holidays, categories);
 }
 
 export async function askAiAssistant(
@@ -105,7 +130,7 @@ export async function askAiAssistant(
         history,
         items,
         transactions,
-        holidays,
+        categories: cachedData?.categories || [],
       }),
     });
 
@@ -119,5 +144,5 @@ export async function askAiAssistant(
     // Offline fallback
   }
 
-  return generateExpertChatAnswer(question, items, transactions, holidays);
+  return generateExpertChatAnswer(question, items, transactions, holidays, cachedData?.categories);
 }

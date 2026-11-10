@@ -10,7 +10,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { generateExpertInventoryAnalysis, generateExpertChatAnswer } from './src/expertAnalysis.js';
+import { generateExpertInventoryAnalysis, generateExpertChatAnswer, computeItemStockAndExpiry } from './src/expertAnalysis.js';
 
 
 async function startServer() {
@@ -44,18 +44,21 @@ async function startServer() {
 
   // API Route: Inventory Analysis with Gemini AI (Resilient Multi-Model & Fallback)
   app.post('/api/gemini/analyze', async (req, res) => {
-    const { items = [], transactions = [], holidays = [] } = req.body;
+    const { items = [], transactions = [], holidays = [], categories = [] } = req.body;
     const ai = getGeminiClient();
 
     if (!ai) {
       // If no API key configured, use high quality expert inventory analysis engine
-      return res.json(generateExpertInventoryAnalysis(items, transactions, holidays));
+      return res.json(generateExpertInventoryAnalysis(items, transactions, holidays, categories));
     }
 
     const prompt = `
-      Bạn là một trợ lý AI chuyên về quản lý vật tư y tế cho khoa Chẩn đoán hình ảnh.
+      Bạn là một trợ lý AI chuyên gia về quản lý dược và vật tư y tế cho khoa Chẩn đoán hình ảnh.
       Dưới đây là dữ liệu tồn kho hiện tại:
       ${JSON.stringify(items, null, 2)}
+
+      Dưới đây là danh mục phân loại:
+      ${JSON.stringify(categories, null, 2)}
 
       Dưới đây là lịch sử giao dịch gần đây:
       ${JSON.stringify(transactions, null, 2)}
@@ -64,11 +67,15 @@ async function startServer() {
       ${JSON.stringify(holidays, null, 2)}
 
       Hãy phân tích dữ liệu trên và đưa ra:
-      1. Báo cáo tóm tắt tình hình tiêu thụ (lưu ý tính toán dựa trên ngày làm việc thực tế).
-      2. Cảnh báo các vật tư sắp hết (dựa trên minStock).
-      3. Cảnh báo các vật tư sắp hết hạn sử dụng (expiryDate).
-      4. Đề xuất việc cần làm (nhập thêm hàng, kiểm tra bất thường, xử lý hàng sắp hết hạn).
-      5. Phát hiện bất thường nếu có (ví dụ tiêu hao văn phòng phẩm quá nhanh).
+      1. Báo cáo tóm tắt tình hình tiêu thụ (tính toán dựa trên ngày làm việc thực tế).
+      2. CẢNH BÁO ĐẶC BIỆT CÁC VẬT TƯ ĐÃ HẾT HẠN SỬ DỤNG:
+         - Mọi lô hàng có hạn dùng trước ngày hiện tại là TUYỆT ĐỐI KHÔNG ĐƯỢC DÙNG CHO BỆNH NHÂN.
+         - Tồn khả dụng thực tế = Tồn sổ sách - Lượng hết hạn.
+         - Nếu một mặt hàng có lượng tồn khả dụng <= định mức tối thiểu hoặc có hàng hết hạn (ví dụ Barit sulfat có 73 gói nhưng đã hết hạn từ 15/09/2026), BẮT BUỘC phải phát cảnh báo nghiêm trọng (danger).
+      3. ĐỀ XUẤT MUA SẮM BỔ SUNG KHẨN CẤP (BẮT BUỘC):
+         - Với mọi mặt hàng có lô hàng đã hết hạn hoặc cạn kho khả dụng, BẮT BUỘC phải tạo đề xuất hành động ưu tiên cao (priority: high) để mua sắm bổ sung thay thế lượng hàng đã quá hạn!
+      4. Cảnh báo các vật tư cận hạn trong 60 ngày để xuất trước theo nguyên tắc FEFO.
+      5. Phát hiện bất thường nếu có.
 
       Trả lời bằng tiếng Việt.
     `;
@@ -155,7 +162,7 @@ async function startServer() {
 
   // API Route: Interactive Q&A Warehouse Copilot with Gemini AI (Grounded in Inventory Database)
   app.post('/api/gemini/chat', async (req, res) => {
-    const { question = '', history = [], items = [], transactions = [], holidays = [] } = req.body;
+    const { question = '', history = [], items = [], transactions = [], holidays = [], categories = [] } = req.body;
 
     if (!question || typeof question !== 'string') {
       return res.status(400).json({ error: 'Question is required' });
@@ -163,25 +170,38 @@ async function startServer() {
 
     const ai = getGeminiClient();
     if (!ai) {
-      const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays);
+      const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays, categories);
       return res.json({ text: fallbackText });
     }
 
-    // Build compact context of inventory database
-    const inventoryOverview = items.map(i => ({
-      name: i.name,
-      category: i.category,
-      currentStock: i.currentStock,
-      minStock: i.minStock,
-      unit: i.unit,
-      price: i.price,
-      batches: (i.batches || []).map((b: any) => ({
-        batchNumber: b.batchNumber,
-        expiryDate: b.expiryDate,
-        quantity: b.quantity,
-      })),
-      expiryDate: i.expiryDate,
-    }));
+    // Build compact context of inventory database with clinical stock analysis (Usable vs Expired)
+    const now = new Date();
+    const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+
+    const inventoryOverview = items.map(i => {
+      const stock = computeItemStockAndExpiry(i, now, sixtyDaysLater, categories);
+      return {
+        name: stock.name,
+        category: stock.categoryName,
+        totalStock: stock.totalStock,
+        usableStock: stock.usableStock,
+        expiredQty: stock.expiredQty,
+        nearingQty: stock.nearingQty,
+        minStock: stock.minStock,
+        unit: stock.unit,
+        price: stock.price,
+        hasExpired: stock.hasExpired,
+        isFullyExpired: stock.isFullyExpired,
+        suggestedPurchaseQty: stock.suggestedReorder,
+        batches: [...stock.expiredBatches, ...stock.nearingBatches, ...stock.validBatches].map(b => ({
+          batchNumber: b.batchNumber,
+          expiryDate: b.expiryDate,
+          quantity: b.quantity,
+          isExpired: b.isExpired,
+        })),
+        expiryDate: i.expiryDate,
+      };
+    });
 
     const recentTx = transactions.slice(0, 30).map(t => ({
       type: t.type,
@@ -195,16 +215,22 @@ async function startServer() {
 Bạn là Trợ lý AI Chuyên gia Quản lý Kho Dược & Vật tư Y tế của Khoa Chẩn đoán Hình ảnh (CĐHA).
 Nhiệm vụ cốt lõi:
 1. Dựa trên dữ liệu kho thực tế được cung cấp dưới đây, hãy trả lời chính xác, trung thực các câu hỏi của nhân viên và bác sĩ.
-2. Tra cứu tồn kho, hạn dùng lô (FEFO), định mức tối thiểu:
-   - Nêu rõ số lượng tồn, đơn vị, định mức an toàn.
-   - Nếu có các lô hàng, liệt kê rõ số lô, hạn dùng và số lượng từng lô.
-   - Ưu tiên xuất dùng lô cận hạn trước theo nguyên tắc FEFO.
-3. Khi được hỏi về kế hoạch dự trù hoặc xin lời khuyên:
-   - Dựa trên lượng tiêu hao thực tế, số ngày làm việc (đã trừ ngày nghỉ).
-   - Đưa ra khuyến nghị nhập hàng cụ thể, có căn cứ số liệu rõ ràng.
-4. Phong cách:
-   - Chuẩn văn phong y tế, mạch lạc, dễ hiểu.
-   - Trình bày dạng Markdown với gạch đầu dòng hoặc bảng biểu số liệu khi cần thiết.
+2. Tra cứu danh mục, nhóm vật tư (Văn phòng phẩm, Dược, Vật tư tiêu hao, Hóa chất & cản quang):
+   - ĐẶC BIỆT CHÚ Ý: Khi người dùng yêu cầu xem danh sách, danh mục, bảng kê, so sánh, hoặc tổng hợp: BẮT BUỘC TRÌNH BÀY BẰNG ĐỊNH DẠNG BẢNG MARKDOWN (Markdown Table) chuẩn GitHub-Flavored Markdown với dòng tiêu đề và phân cách cột chuẩn xác.
+   - Luôn chừa dòng trống trước và sau bảng markdown để giao diện kết xuất bảng HTML trực quan, dễ quan sát.
+   - Tuyệt đối phân loại đúng nhóm: Thuốc (Pdsolone, Vinsolon, NaCl, v.v.) thuộc nhóm Dược; Túi phim, dây nối thuộc Vật tư tiêu hao; Giấy in, bút, ghim, v.v. thuộc Văn phòng phẩm. Không bao giờ xếp thuốc hoặc túi phim vào nhóm văn phòng phẩm!
+3. NGUYÊN TẮC Y TẾ BẮT BUỘC VỀ HẠN DÙNG & ĐỀ XUẤT MUA SẮM BỔ SUNG:
+   - Trong y tế, mọi lô hàng đã quá hạn sử dụng (hạn dùng trước ngày hiện tại) TUYỆT ĐỐI KHÔNG ĐƯỢC PHÉP DÙNG CHO BỆNH NHÂN và phải lập tức niêm phong.
+   - Tồn khả dụng an toàn = Tồn sổ sách - Lượng hàng đã hết hạn.
+   - Khi một mặt hàng có hàng hết hạn (ví dụ Barit sulfat có 73 gói nhưng toàn bộ 73 gói đã hết hạn ngày 15/09/2026 nên tồn khả dụng an toàn = 0):
+     * BẮT BUỘC PHẢI CẢNH BÁO NGUY HIỂM VỀ LÔ HÀNG ĐÃ QUÁ HẠN.
+     * BẮT BUỘC PHẢI ĐƯA NGAY VÀO DANH SÁCH ĐỀ XUẤT MUA SẮM BỔ SUNG KHẨN CẤP với số lượng cụ thể (bù lại lượng hết hạn + duy trì đệm an toàn dự phòng) để không làm gián đoạn ca chụp cản quang hay khám chữa bệnh!
+4. Tra cứu hạn dùng lô (FEFO), định mức tối thiểu:
+   - Trình bày dạng bảng chi tiết các lô hàng, số lô, hạn dùng, lượng hết hạn, tồn khả dụng, và số lượng đề xuất mua sắm bù đắp.
+5. Dự trù và tiêu hao:
+   - Trình bày bảng chi tiết số lượng đề xuất nhập, đơn giá, ước tính chi phí và lý do cụ thể (Bù hàng hết hạn / Chạm định mức).
+6. Phong cách:
+   - Chuẩn văn phong y tế, mạch lạc, dễ quan sát, trực quan bằng bảng số liệu.
    - KHÔNG bịa đặt số liệu (Zero Hallucination). Nếu vật tư không tồn tại trong danh mục, hãy nêu rõ ràng.
 `;
 
@@ -255,7 +281,7 @@ ${question}
     }
 
     // Fallback if cloud API is busy or API key is not active
-    const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays);
+    const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays, categories);
     return res.json({ text: fallbackText });
   });
 
