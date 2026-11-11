@@ -73,3 +73,75 @@ body.theme-medical,
   background-color: #1e429f !important;
 }
 
+/* ============================================================
+   ĐỊNH DẠNG KHUNG VIỀN RÕ RÀNG CHO BẢNG DỮ LIỆU PHÂN TÍCH AI
+   ============================================================ */
+.prose table {
+  border-collapse: collapse !important;
+  width: 100% !important;
+  border: 2px solid #cbd5e1 !important;
+  margin-top: 1rem !important;
+  margin-bottom: 1rem !important;
+}
+
+.dark .prose table {
+  border-color: #475569 !important;
+}
+
+.prose thead {
+  border-bottom: 2px solid #cbd5e1 !important;
+  background-color: #f1f5f9 !important;
+}
+
+.dark .prose thead {
+  border-bottom: 2px solid #475569 !important;
+  background-color: #1e293b !important;
+}
+
+.prose th {
+  border: 1px solid #cbd5e1 !important;
+  padding: 0.65rem 0.85rem !important;
+  font-size: 0.75rem !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  color: #0f172a !important;
+  background-color: #e2e8f0 !important;
+  white-space: nowrap !important;
+}
+
+.dark .prose th {
+  border-color: #475569 !important;
+  color: #f8fafc !important;
+  background-color: #334155 !important;
+}
+
+.prose td {
+  border: 1px solid #cbd5e1 !important;
+  padding: 0.55rem 0.85rem !important;
+  font-size: 0.8125rem !important;
+  color: #1e293b !important;
+  white-space: nowrap !important;
+}
+
+.dark .prose td {
+  border-color: #475569 !important;
+  color: #e2e8f0 !important;
+}
+
+.prose tbody tr:nth-child(even) {
+  background-color: #f8fafc !important;
+}
+
+.dark .prose tbody tr:nth-child(even) {
+  background-color: rgba(30, 41, 59, 0.5) !important;
+}
+
+.prose tbody tr:hover {
+  background-color: #eff6ff !important;
+}
+
+.dark .prose tbody tr:hover {
+  background-color: rgba(59, 130, 246, 0.15) !important;
+}
+

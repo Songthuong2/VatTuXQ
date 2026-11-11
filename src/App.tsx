@@ -42,6 +42,7 @@ import {
   Users,
   Layers,
   ChevronDown,
+  ChevronUp,
   Tag,
   Sparkles,
   Info,
@@ -50,7 +51,10 @@ import {
   MessageSquare,
   Copy,
   Check,
-  Bot
+  Bot,
+  Shield,
+  Percent,
+  Printer
 } from 'lucide-react';
 import { GoogleSheetsHub } from './GoogleSheetsHub';
 import { UsersManager, StaffUser } from './UsersManager';
@@ -362,6 +366,13 @@ const normalizeDate = (dateVal: any) => {
   return dateStr;
 };
 
+const getLocalFormattedDate = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const getWorkingDays = (startDate: Date, endDate: Date, holidays: Holiday[]) => {
   let count = 0;
   const curDate = new Date(startDate.getTime());
@@ -371,7 +382,7 @@ const getWorkingDays = (startDate: Date, endDate: Date, holidays: Holiday[]) => 
   end.setHours(0, 0, 0, 0);
 
   while (curDate <= end) {
-    const dateStr = curDate.toISOString().split('T')[0];
+    const dateStr = getLocalFormattedDate(curDate);
     const isHoliday = holidays.some(h => h.date === dateStr);
     if (!isHoliday) {
       count++;
@@ -380,6 +391,137 @@ const getWorkingDays = (startDate: Date, endDate: Date, holidays: Holiday[]) => 
   }
   return count;
 };
+
+interface WorkingDaysCalculationResult {
+  actualWorkingDays: number;
+  actualCalendarDays: number;
+  actualHolidaysDeducted: number;
+  fullRangeWorkingDays: number;
+  fullRangeCalendarDays: number;
+  fullRangeHolidaysCount: number;
+  isFutureEnd: boolean;
+  isFutureStart: boolean;
+  todayStr: string;
+}
+
+const calculateWorkingDaysWithFutureCutoff = (startDateStr: string, endDateStr: string, holidays: Holiday[]): WorkingDaysCalculationResult => {
+  const now = new Date();
+  const todayStr = getLocalFormattedDate(now);
+  const today = new Date(todayStr + 'T00:00:00');
+  const start = new Date(startDateStr + 'T00:00:00');
+  const end = new Date(endDateStr + 'T00:00:00');
+
+  const isFutureEnd = end.getTime() > today.getTime();
+  const isFutureStart = start.getTime() > today.getTime();
+
+  // 1. Tính toán toàn kỳ đã chọn (từ start đến end)
+  let fullRangeCalendarDays = 0;
+  let fullRangeWorkingDays = 0;
+  let fullRangeHolidaysCount = 0;
+  if (start.getTime() <= end.getTime()) {
+    const cur = new Date(start.getTime());
+    while (cur.getTime() <= end.getTime()) {
+      fullRangeCalendarDays++;
+      const curStr = getLocalFormattedDate(cur);
+      if (holidays.some(h => h.date === curStr)) {
+        fullRangeHolidaysCount++;
+      } else {
+        fullRangeWorkingDays++;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+  }
+
+  // 2. Tính số ngày làm việc thực tế: Nếu mốc kết thúc ở tương lai, tính từ ngày bắt đầu tới hiện tại (today) trừ ngày nghỉ
+  let actualCalendarDays = 0;
+  let actualWorkingDays = 0;
+  let actualHolidaysDeducted = 0;
+
+  if (isFutureStart) {
+    // Nếu cả khoảng thời gian nằm hoàn toàn ở tương lai (chưa bắt đầu)
+    actualCalendarDays = 0;
+    actualWorkingDays = 0;
+    actualHolidaysDeducted = 0;
+  } else {
+    const effectiveEnd = isFutureEnd ? today : end;
+    if (start.getTime() <= effectiveEnd.getTime()) {
+      const cur = new Date(start.getTime());
+      while (cur.getTime() <= effectiveEnd.getTime()) {
+        actualCalendarDays++;
+        const curStr = getLocalFormattedDate(cur);
+        if (holidays.some(h => h.date === curStr)) {
+          actualHolidaysDeducted++;
+        } else {
+          actualWorkingDays++;
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+  }
+
+  return {
+    actualWorkingDays,
+    actualCalendarDays,
+    actualHolidaysDeducted,
+    fullRangeWorkingDays,
+    fullRangeCalendarDays,
+    fullRangeHolidaysCount,
+    isFutureEnd,
+    isFutureStart,
+    todayStr
+  };
+};
+
+// Reusable Markdown Table & Typography components with clear visible grid borders
+const createAiMarkdownComponents = (_isDark: boolean) => ({
+  table: ({ node, ...props }: any) => (
+    <div className="my-4 overflow-x-auto rounded-xl border-2 border-slate-300 dark:border-slate-600 shadow-sm bg-white dark:bg-slate-900">
+      <table className="w-full text-left text-xs border-collapse border border-slate-300 dark:border-slate-600 min-w-[650px]" {...props} />
+    </div>
+  ),
+  thead: ({ node, ...props }: any) => (
+    <thead className="bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold border-b-2 border-slate-300 dark:border-slate-600" {...props} />
+  ),
+  th: ({ node, ...props }: any) => (
+    <th className="px-3.5 py-2.5 font-bold uppercase tracking-wider text-[11px] whitespace-nowrap text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800/90" {...props} />
+  ),
+  tbody: ({ node, ...props }: any) => (
+    <tbody className="bg-white dark:bg-slate-900" {...props} />
+  ),
+  tr: ({ node, ...props }: any) => (
+    <tr className="hover:bg-blue-50/70 dark:hover:bg-slate-800/80 transition-colors odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/50" {...props} />
+  ),
+  td: ({ node, ...props }: any) => (
+    <td className="px-3.5 py-2.5 text-slate-800 dark:text-slate-200 text-xs border border-slate-300 dark:border-slate-600 whitespace-nowrap" {...props} />
+  ),
+  p: ({ node, ...props }: any) => (
+    <p className="my-2 leading-relaxed" {...props} />
+  ),
+  ul: ({ node, ...props }: any) => (
+    <ul className="my-2.5 space-y-1 pl-5 list-disc" {...props} />
+  ),
+  ol: ({ node, ...props }: any) => (
+    <ol className="my-2.5 space-y-1 pl-5 list-decimal" {...props} />
+  ),
+  li: ({ node, ...props }: any) => (
+    <li className="leading-relaxed" {...props} />
+  ),
+  h1: ({ node, ...props }: any) => (
+    <h1 className="text-lg font-black text-slate-900 dark:text-white mt-4 mb-2 pb-1 border-b border-slate-200 dark:border-slate-700" {...props} />
+  ),
+  h2: ({ node, ...props }: any) => (
+    <h2 className="text-base font-bold text-slate-900 dark:text-white mt-3 mb-2" {...props} />
+  ),
+  h3: ({ node, ...props }: any) => (
+    <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-3 mb-1.5 flex items-center gap-1.5" {...props} />
+  ),
+  strong: ({ node, ...props }: any) => (
+    <strong className="font-bold text-slate-900 dark:text-white" {...props} />
+  ),
+  blockquote: ({ node, ...props }: any) => (
+    <blockquote className="my-3 pl-3.5 border-l-4 border-blue-500 bg-blue-50/50 dark:bg-slate-800/50 py-2 pr-3 rounded-r-lg italic text-slate-700 dark:text-slate-300 text-xs" {...props} />
+  ),
+});
 
 // Batch Management Helpers
 const getItemBatches = (item: Item): ItemBatch[] => {
@@ -1641,7 +1783,18 @@ export default function App() {
           {activeTab === 'transactions' && <Transactions transactions={transactions} items={items} departments={departments} categories={categories} globalSearch={globalSearch} darkMode={darkMode} />}
           {activeTab === 'audit' && <InventoryAudit items={items} categories={categories} globalSearch={globalSearch} darkMode={darkMode} />}
           {activeTab === 'planning' && <InventoryPlanning items={items} transactions={transactions} categories={categories} holidays={holidays} globalSearch={globalSearch} darkMode={darkMode} />}
-          {activeTab === 'reports' && <Reports transactions={transactions} items={items} categories={categories} departments={departments} holidays={holidays} globalSearch={globalSearch} darkMode={darkMode} />}
+          {activeTab === 'reports' && (
+            <Reports 
+              transactions={transactions} 
+              items={items} 
+              categories={categories} 
+              departments={departments} 
+              holidays={holidays} 
+              globalSearch={globalSearch} 
+              darkMode={darkMode}
+              onNavigateHolidays={() => setActiveTab('holidays')}
+            />
+          )}
           {activeTab === 'holidays' && <Holidays holidays={holidays} darkMode={darkMode} />}
           {activeTab === 'google-sheets' && (
             <GoogleSheetsHub 
@@ -5557,18 +5710,97 @@ function InventoryAudit({ items, categories, globalSearch, darkMode }: { items: 
 }
 
 function InventoryPlanning({ items, transactions, categories, holidays, globalSearch, darkMode }: { items: Item[], transactions: Transaction[], categories: Category[], holidays: Holiday[], globalSearch: string, darkMode?: boolean }) {
-  const [planningDate, setPlanningDate] = useState(new Date().toISOString().split('T')[0]);
+  const [planningDate, setPlanningDate] = useState(() => {
+    return getLocalFormattedDate(new Date());
+  });
   const [forecastUntilDate, setForecastUntilDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() + 30);
-    return d.toISOString().split('T')[0];
+    return getLocalFormattedDate(d);
   });
   const [actualStockData, setActualStockData] = useState<Record<string, string>>({});
-  const [results, setResults] = useState<Record<string, { depletionDate: string, needed: number, dailyUsage: number }>>({});
+  
+  // Safety Buffer Settings (Persisted in localStorage)
+  const [safetyBufferType, setSafetyBufferType] = useState<'percent' | 'days'>(() => {
+    return (localStorage.getItem('inventoryPlanning_safetyBufferType') as 'percent' | 'days') || 'percent';
+  });
+  const [safetyBufferValue, setSafetyBufferValue] = useState<number>(() => {
+    const saved = localStorage.getItem('inventoryPlanning_safetyBufferValue');
+    return saved !== null ? Math.max(0, parseFloat(saved)) : 15; // default 15% safety buffer
+  });
+  const [includeMinStock, setIncludeMinStock] = useState<boolean>(() => {
+    const saved = localStorage.getItem('inventoryPlanning_includeMinStock');
+    return saved !== null ? saved === 'true' : true; // default true: maintain min stock
+  });
+
+  const [results, setResults] = useState<Record<string, { 
+    depletionDate: string;
+    dailyUsage: number;
+    pastTotalOut: number;
+    pastWorkingDays: number;
+    workingDaysInFuture: number;
+    basePeriodUsage: number;
+    safetyBufferQty: number;
+    minStockBuffer: number;
+    totalGrossDemand: number;
+    actualStock: number;
+    needed: number;
+    surplus: number;
+  }>>({});
+  
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
-  const [usageWindow, setUsageWindow] = useState(90);
+  const [usageMode, setUsageMode] = useState<string>(() => {
+    return localStorage.getItem('inventoryPlanning_usageMode') || 'ytd';
+  });
+  const [customPastStartDate, setCustomPastStartDate] = useState<string>(() => {
+    const saved = localStorage.getItem('inventoryPlanning_customPastStartDate');
+    if (saved) return saved;
+    const now = new Date();
+    return `${now.getFullYear()}-01-01`;
+  });
   const [isCalculating, setIsCalculating] = useState(false);
+  const [filterOnlyNeeded, setFilterOnlyNeeded] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('inventoryPlanning_safetyBufferType', safetyBufferType);
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+  }, [safetyBufferType]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('inventoryPlanning_safetyBufferValue', safetyBufferValue.toString());
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+  }, [safetyBufferValue]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('inventoryPlanning_includeMinStock', includeMinStock.toString());
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+  }, [includeMinStock]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('inventoryPlanning_usageMode', usageMode);
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+  }, [usageMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('inventoryPlanning_customPastStartDate', customPastStartDate);
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+  }, [customPastStartDate]);
 
   const uniqueCategories = useMemo(() => {
     const map = new Map<string, Category>();
@@ -5593,6 +5825,163 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
     return idMap;
   }, [categories, uniqueCategories]);
 
+  // Working days in future planning period
+  const futurePeriodStats = useMemo(() => {
+    return calculateWorkingDaysWithFutureCutoff(planningDate, forecastUntilDate, holidays);
+  }, [planningDate, forecastUntilDate, holidays]);
+
+  // Summary of past consumption reference period
+  const pastPeriodSummary = useMemo(() => {
+    const planningDateTime = new Date(planningDate + 'T00:00:00');
+    let startDateObj: Date;
+    let label = '';
+
+    if (usageMode === 'ytd') {
+      startDateObj = new Date(planningDateTime.getFullYear(), 0, 1, 0, 0, 0);
+      label = `Từ đầu năm đến nay (01/01/${planningDateTime.getFullYear()} → ${formatDate(planningDate)})`;
+    } else if (usageMode === 'custom') {
+      startDateObj = new Date(customPastStartDate + 'T00:00:00');
+      label = `Tùy chọn (${formatDate(customPastStartDate)} → ${formatDate(planningDate)})`;
+    } else {
+      const days = parseInt(usageMode, 10) || 90;
+      startDateObj = new Date(planningDateTime.getTime() - (days * 24 * 60 * 60 * 1000));
+      label = `${days === 365 ? '1 năm gần nhất (365 ngày lịch)' : `${days} ngày gần nhất`} (${formatDate(getLocalFormattedDate(startDateObj))} → ${formatDate(planningDate)})`;
+    }
+
+    const workingDays = Math.max(1, getWorkingDays(startDateObj, planningDateTime, holidays));
+    return {
+      startDateObj,
+      startDateStr: getLocalFormattedDate(startDateObj),
+      endDateStr: planningDate,
+      label,
+      workingDays
+    };
+  }, [planningDate, usageMode, customPastStartDate, holidays]);
+
+  const handleCalculate = () => {
+    setIsCalculating(true);
+    setTimeout(() => {
+      const newResults: Record<string, { 
+        depletionDate: string;
+        dailyUsage: number;
+        pastTotalOut: number;
+        pastWorkingDays: number;
+        workingDaysInFuture: number;
+        basePeriodUsage: number;
+        safetyBufferQty: number;
+        minStockBuffer: number;
+        totalGrossDemand: number;
+        actualStock: number;
+        needed: number;
+        surplus: number;
+      }> = {};
+
+      const planningDateTime = new Date(planningDate + 'T00:00:00');
+      const forecastUntilDateTime = new Date(forecastUntilDate + 'T23:59:59');
+      
+      let pastStartDateObj: Date;
+      if (usageMode === 'ytd') {
+        pastStartDateObj = new Date(planningDateTime.getFullYear(), 0, 1, 0, 0, 0);
+      } else if (usageMode === 'custom') {
+        pastStartDateObj = new Date(customPastStartDate + 'T00:00:00');
+      } else {
+        const days = parseInt(usageMode, 10) || 90;
+        pastStartDateObj = new Date(planningDateTime.getTime() - (days * 24 * 60 * 60 * 1000));
+      }
+      
+      // Working days in past window and in future forecast window
+      const workingDaysInPast = Math.max(1, getWorkingDays(pastStartDateObj, planningDateTime, holidays));
+      const workingDaysInFuture = Math.max(1, getWorkingDays(planningDateTime, forecastUntilDateTime, holidays));
+
+      items.forEach(item => {
+        const itemTrans = transactions.filter(t => {
+          if (!t.itemId || t.itemId !== item.id || t.type !== 'OUT') return false;
+          const ts = t.timestamp?.toDate ? t.timestamp.toDate().getTime() : 
+                     (t.timestamp?.seconds ? t.timestamp.seconds * 1000 : 
+                     (t.timestamp ? new Date(t.timestamp).getTime() : 0));
+          return ts >= pastStartDateObj.getTime() && ts <= planningDateTime.getTime();
+        });
+        
+        const totalOut = itemTrans.reduce((sum, t) => sum + t.quantity, 0);
+        // Daily usage based on actual working days in past
+        const dailyUsage = workingDaysInPast > 0 ? totalOut / workingDaysInPast : 0;
+        
+        const actualStockStr = actualStockData[item.id];
+        const actualStock = actualStockStr !== undefined && actualStockStr !== '' ? parseFloat(actualStockStr) : item.currentStock;
+        
+        let depletionDateStr = 'N/A';
+        if (dailyUsage > 0) {
+          // Find the date when stock will be depleted by counting working days
+          let stockLeft = actualStock;
+          const checkDate = new Date(planningDateTime.getTime());
+          // Limit to 2 years to avoid infinite loop
+          const maxDate = new Date(planningDateTime.getTime() + (730 * 24 * 60 * 60 * 1000));
+          
+          while (stockLeft > 0 && checkDate < maxDate) {
+            checkDate.setDate(checkDate.getDate() + 1);
+            const dateStr = getLocalFormattedDate(checkDate);
+            const isHoliday = holidays.some(h => h.date === dateStr);
+            if (!isHoliday) {
+              stockLeft -= dailyUsage;
+            }
+          }
+          
+          if (stockLeft <= 0) {
+            depletionDateStr = formatDate(getLocalFormattedDate(checkDate));
+          } else {
+            depletionDateStr = '> 2 năm';
+          }
+        }
+        
+        // 1. Tiêu hao cơ bản trong kỳ = dailyUsage * workingDaysInFuture
+        const basePeriodUsage = workingDaysInFuture * dailyUsage;
+
+        // 2. Dư lượng an toàn (Safety Buffer)
+        let safetyBufferQty = 0;
+        if (safetyBufferType === 'percent') {
+          safetyBufferQty = basePeriodUsage * (Math.max(0, safetyBufferValue) / 100);
+        } else {
+          // Theo số ngày đệm an toàn
+          safetyBufferQty = dailyUsage * Math.max(0, safetyBufferValue);
+        }
+
+        // 3. Mức tồn tối thiểu duy trì (Min Stock)
+        const minStockBuffer = includeMinStock ? (Number(item.minStock) || 0) : 0;
+
+        // 4. Tổng nhu cầu an toàn trong kỳ
+        const totalGrossDemand = basePeriodUsage + safetyBufferQty + minStockBuffer;
+
+        // 5. Số lượng cần nhập thêm
+        const needed = Math.max(0, Math.ceil(totalGrossDemand - actualStock));
+        const surplus = Math.max(0, actualStock - totalGrossDemand);
+        
+        newResults[item.id] = { 
+          depletionDate: depletionDateStr, 
+          dailyUsage,
+          pastTotalOut: totalOut,
+          pastWorkingDays: workingDaysInPast,
+          workingDaysInFuture,
+          basePeriodUsage,
+          safetyBufferQty,
+          minStockBuffer,
+          totalGrossDemand,
+          actualStock,
+          needed,
+          surplus
+        };
+      });
+      
+      setResults(newResults);
+      setIsCalculating(false);
+    }, 350);
+  };
+
+  // Run calculation on initial mount and when parameters change
+  useEffect(() => {
+    handleCalculate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningDate, forecastUntilDate, usageMode, customPastStartDate, safetyBufferType, safetyBufferValue, includeMinStock, items.length]);
+
   const filteredItems = useMemo(() => {
     return items.filter(item => {
       const matchesSearch = (
@@ -5604,142 +5993,413 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
         matchesSearchQuery(item.code, globalSearch)
       );
       const matchesCategory = filterCategory ? categoryIdMap.get(item.categoryId) === filterCategory : true;
-      return matchesSearch && matchesCategory;
+      const res = results[item.id];
+      const matchesNeeded = filterOnlyNeeded ? (res && res.needed > 0) : true;
+      return matchesSearch && matchesCategory && matchesNeeded;
     });
-  }, [items, searchTerm, globalSearch, filterCategory, categoryIdMap]);
+  }, [items, searchTerm, globalSearch, filterCategory, categoryIdMap, filterOnlyNeeded, results]);
 
-  const handleCalculate = () => {
-    setIsCalculating(true);
-    // Simulate a bit of processing time for better UX
-    setTimeout(() => {
-      const newResults: Record<string, { depletionDate: string, needed: number, dailyUsage: number }> = {};
-      const planningDateTime = new Date(planningDate + 'T00:00:00');
-      const forecastUntilDateTime = new Date(forecastUntilDate + 'T23:59:59');
-      
-      // Calculate average daily usage for each item (last usageWindow days from planning date)
-      const windowDaysAgo = new Date(planningDateTime.getTime() - (usageWindow * 24 * 60 * 60 * 1000));
-      
-      // Get working days in the last window
-      const workingDaysInPast = getWorkingDays(windowDaysAgo, planningDateTime, holidays);
-      const workingDaysInFuture = getWorkingDays(planningDateTime, forecastUntilDateTime, holidays);
+  const summaryStats = useMemo(() => {
+    let itemsNeededCount = 0;
+    let itemsAdequateCount = 0;
+    let totalNeededQuantity = 0;
+    let totalEstimatedCost = 0;
 
-      items.forEach(item => {
-        const itemTrans = transactions.filter(t => {
-          if (!t.itemId || t.itemId !== item.id || t.type !== 'OUT') return false;
-          const ts = t.timestamp?.toDate ? t.timestamp.toDate().getTime() : 
-                     (t.timestamp?.seconds ? t.timestamp.seconds * 1000 : 
-                     (t.timestamp ? new Date(t.timestamp).getTime() : 0));
-          return ts >= windowDaysAgo.getTime() && ts <= planningDateTime.getTime();
-        });
-        
-        const totalOut = itemTrans.reduce((sum, t) => sum + t.quantity, 0);
-        // Daily usage based on actual working days
-        const dailyUsage = workingDaysInPast > 0 ? totalOut / workingDaysInPast : 0;
-        
-        const actualStockStr = actualStockData[item.id];
-        const actualStock = actualStockStr !== undefined && actualStockStr !== '' ? parseFloat(actualStockStr) : item.currentStock;
-        
-        let depletionDateStr = 'N/A';
-        if (dailyUsage > 0) {
-          // Find the date when stock will be depleted by counting working days
-          let stockLeft = actualStock;
-          let daysCount = 0;
-          const checkDate = new Date(planningDateTime.getTime());
-          // Limit to 2 years to avoid infinite loop
-          const maxDate = new Date(planningDateTime.getTime() + (730 * 24 * 60 * 60 * 1000));
-          
-          while (stockLeft > 0 && checkDate < maxDate) {
-            checkDate.setDate(checkDate.getDate() + 1);
-            const dateStr = checkDate.toISOString().split('T')[0];
-            const isHoliday = holidays.some(h => h.date === dateStr);
-            if (!isHoliday) {
-              stockLeft -= dailyUsage;
-            }
-            daysCount++;
-          }
-          
-          if (stockLeft <= 0) {
-            depletionDateStr = checkDate.toLocaleDateString('vi-VN');
-          } else {
-            depletionDateStr = '> 2 năm';
-          }
-        }
-        
-        const totalNeededForPeriod = workingDaysInFuture * dailyUsage;
-        const needed = Math.max(0, Math.ceil(totalNeededForPeriod - actualStock));
-        
-        newResults[item.id] = { depletionDate: depletionDateStr, needed, dailyUsage };
-      });
-      
-      setResults(newResults);
-      setIsCalculating(false);
-    }, 500);
+    items.forEach(item => {
+      const res = results[item.id];
+      if (!res) return;
+      if (res.needed > 0) {
+        itemsNeededCount++;
+        totalNeededQuantity += res.needed;
+        totalEstimatedCost += res.needed * (Number(item.price) || 0);
+      } else {
+        itemsAdequateCount++;
+      }
+    });
+
+    return {
+      itemsNeededCount,
+      itemsAdequateCount,
+      totalNeededQuantity,
+      totalEstimatedCost,
+      totalItems: items.length
+    };
+  }, [results, items]);
+
+  const handleExportPlanningExcel = () => {
+    const data = filteredItems.map((item, idx) => {
+      const res = results[item.id];
+      const category = categories.find(c => c.id === item.categoryId);
+      const actualStockStr = actualStockData[item.id];
+      const actualStock = actualStockStr !== undefined && actualStockStr !== '' ? parseFloat(actualStockStr) : item.currentStock;
+
+      const bufferLabel = safetyBufferType === 'percent' 
+        ? `${safetyBufferValue}% (+${res ? res.safetyBufferQty.toFixed(1) : 0})` 
+        : `+${safetyBufferValue} ngày (+${res ? res.safetyBufferQty.toFixed(1) : 0})`;
+
+      return {
+        'STT': idx + 1,
+        'Tên vật tư': item.name,
+        'Nhóm': category?.name || '-',
+        'Đơn vị': item.unit,
+        'Tồn PM': item.currentStock,
+        'Tồn thực tế kiểm tra': actualStock,
+        'Định mức Min': item.minStock || 0,
+        'Tiêu hao bình quân/ngày': res ? res.dailyUsage.toFixed(2) : 0,
+        'Chi tiết tiêu hao': res ? `(${res.pastTotalOut} ÷ ${res.pastWorkingDays} ngày lv)` : '',
+        'Tiêu hao cơ bản trong kỳ': res ? res.basePeriodUsage.toFixed(2) : 0,
+        'Mức dư lượng an toàn': bufferLabel,
+        'Duy trì tồn Min': includeMinStock ? (item.minStock || 0) : 0,
+        'Tổng nhu cầu dự trù an toàn': res ? Math.ceil(res.totalGrossDemand) : 0,
+        'Dự kiến hết': res?.depletionDate || 'N/A',
+        'Số lượng cần nhập thêm': res ? res.needed : 0,
+        'Trạng thái': res && res.needed > 0 ? `Cần nhập (+${res.needed})` : 'Đủ dùng',
+        'Đơn giá (đ)': item.price || 0,
+        'Thành tiền dự trù (đ)': res && res.needed > 0 ? (res.needed * (item.price || 0)) : 0
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ke_hoach_du_tru");
+    XLSX.writeFile(wb, `Du_tru_vat_tu_CDHA_${planningDate}_den_${forecastUntilDate}.xlsx`);
+    toast.success('Đã xuất file Excel dự trù vật tư thành công!');
+  };
+
+  const handlePrintPlanning = () => {
+    window.print();
   };
 
   return (
     <div className="space-y-6">
-      <div className={`p-6 rounded-2xl border shadow-sm ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
+      {/* Settings & Filter Panel */}
+      <div className={`p-6 rounded-2xl border shadow-sm transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
+        {/* Row 1: Period and Basic Parameters */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-end mb-4">
           <div className="flex flex-col">
-            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Ngày làm dự trù</label>
+            <label className={`text-xs font-bold uppercase mb-1 flex items-center gap-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              <Calendar className="w-3.5 h-3.5 text-blue-500" />
+              Ngày làm dự trù
+            </label>
             <input 
               type="date" 
               value={planningDate}
               onChange={(e) => setPlanningDate(e.target.value)}
-              className={`px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+              className={`px-3.5 py-2 border rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
             />
           </div>
+
           <div className="flex flex-col">
-            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Dự trù đến ngày</label>
+            <label className={`text-xs font-bold uppercase mb-1 flex items-center gap-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              <CalendarRange className="w-3.5 h-3.5 text-blue-500" />
+              Dự trù đến ngày
+            </label>
             <input 
               type="date" 
               value={forecastUntilDate}
               onChange={(e) => setForecastUntilDate(e.target.value)}
-              className={`px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+              className={`px-3.5 py-2 border rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
             />
           </div>
+
           <div className="flex flex-col">
-            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Dữ liệu tiêu hao</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className={`text-xs font-bold uppercase ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                Dữ liệu tiêu hao quá khứ
+              </label>
+              <span className="text-[10px] font-bold text-blue-500" title={`Số ngày làm việc thực tế trong kỳ: ${pastPeriodSummary.workingDays} ngày`}>
+                {pastPeriodSummary.workingDays}d lv
+              </span>
+            </div>
             <select 
-              value={usageWindow}
-              onChange={(e) => setUsageWindow(parseInt(e.target.value))}
-              className={`px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+              value={usageMode}
+              onChange={(e) => setUsageMode(e.target.value)}
+              className={`px-3 py-2 border rounded-xl text-xs sm:text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
             >
+              <option value="ytd">⭐ Từ đầu năm đến nay (Năm {new Date(planningDate + 'T00:00:00').getFullYear()} - Khớp Báo cáo)</option>
+              <option value="90">90 ngày gần nhất (Khuyên dùng)</option>
               <option value="30">30 ngày gần nhất</option>
               <option value="60">60 ngày gần nhất</option>
-              <option value="90">90 ngày gần nhất</option>
               <option value="180">180 ngày gần nhất</option>
+              <option value="365">1 năm gần nhất (365 ngày lịch)</option>
+              <option value="custom">📅 Tùy chọn ngày bắt đầu...</option>
             </select>
+            {usageMode === 'custom' && (
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <span className={`text-[10px] font-bold whitespace-nowrap ${darkMode ? 'text-amber-400' : 'text-amber-700'}`}>Từ ngày:</span>
+                <input 
+                  type="date"
+                  value={customPastStartDate}
+                  onChange={(e) => setCustomPastStartDate(e.target.value)}
+                  className={`w-full px-2 py-1 text-xs font-bold border rounded-lg focus:ring-2 focus:ring-amber-500 outline-none ${
+                    darkMode ? 'bg-slate-700 border-amber-500/50 text-white' : 'bg-amber-50/80 border-amber-300 text-slate-900'
+                  }`}
+                  title="Chọn ngày bắt đầu của chu kỳ tiêu hao mẫu"
+                />
+              </div>
+            )}
           </div>
+
           <div className="flex flex-col">
-            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tìm kiếm</label>
-            <input 
-              type="text" 
-              placeholder="Tên vật tư..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className={`px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
-            />
+            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tìm kiếm vật tư</label>
+            <div className="relative">
+              <input 
+                type="text" 
+                placeholder="Tên, mã, quy cách..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className={`w-full pl-9 pr-3.5 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+              />
+              <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+            </div>
           </div>
+
           <div className="flex flex-col">
-            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Nhóm</label>
+            <label className={`text-xs font-bold uppercase mb-1 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Nhóm vật tư</label>
             <select 
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
-              className={`px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
+              className={`px-3.5 py-2 border rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`}
             >
               <option value="">Tất cả nhóm</option>
               {uniqueCategories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
+
           <button 
+            type="button"
             onClick={handleCalculate}
             disabled={isCalculating}
-            className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
+            className="px-5 py-2.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-md shadow-blue-500/20 flex items-center justify-center gap-2"
           >
             {isCalculating ? <Loader2 className="w-4 h-4 animate-spin" /> : <TrendingUp className="w-4 h-4" />}
             Tính dự trù
           </button>
+        </div>
+
+        {/* Row 2: Configurable Safety Buffer & Retention Options */}
+        <div className={`pt-4 border-t ${darkMode ? 'border-slate-700/80' : 'border-slate-100'} flex flex-col lg:flex-row lg:items-center justify-between gap-4`}>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                <Shield className="w-4 h-4" />
+              </div>
+              <span className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                Chỉ số Dư lượng an toàn:
+              </span>
+            </div>
+
+            {/* Toggle Buffer Type: % vs Days */}
+            <div className={`p-0.5 rounded-xl border flex items-center ${darkMode ? 'bg-slate-900/80 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
+              <button
+                type="button"
+                onClick={() => setSafetyBufferType('percent')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
+                  safetyBufferType === 'percent'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Tính theo tỷ lệ % lượng tiêu hao dự kiến"
+              >
+                <Percent className="w-3 h-3" />
+                <span>Theo % dự phòng</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSafetyBufferType('days')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
+                  safetyBufferType === 'days'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Tính theo số ngày làm việc đệm an toàn"
+              >
+                <Clock className="w-3 h-3" />
+                <span>Theo số ngày đệm</span>
+              </button>
+            </div>
+
+            {/* Preset Buttons */}
+            {safetyBufferType === 'percent' ? (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {[0, 5, 10, 15, 20, 25].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => setSafetyBufferValue(pct)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all ${
+                      safetyBufferValue === pct
+                        ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
+                        : darkMode 
+                        ? 'bg-slate-700/60 border-slate-600 text-slate-300 hover:bg-slate-700' 
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {pct === 0 ? '0% (Không)' : pct === 15 ? '15% ⭐ Khuyên dùng' : `${pct}%`}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {[0, 3, 5, 7, 10, 15].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    onClick={() => setSafetyBufferValue(days)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all ${
+                      safetyBufferValue === days
+                        ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
+                        : darkMode 
+                        ? 'bg-slate-700/60 border-slate-600 text-slate-300 hover:bg-slate-700' 
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {days === 0 ? '+0 ngày' : days === 5 ? '+5 ngày ⭐ Khuyên dùng' : `+${days} ngày`}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Custom Buffer Input */}
+            <div className="flex items-center gap-1.5">
+              <span className={`text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tùy chỉnh:</span>
+              <div className="relative w-24">
+                <input
+                  type="number"
+                  min="0"
+                  max={safetyBufferType === 'percent' ? 200 : 90}
+                  step={safetyBufferType === 'percent' ? 1 : 1}
+                  value={safetyBufferValue}
+                  onChange={(e) => setSafetyBufferValue(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className={`w-full px-2.5 py-1 text-center text-xs font-black rounded-lg border focus:ring-2 focus:ring-blue-500 outline-none ${
+                    darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'
+                  }`}
+                />
+                <span className="absolute right-2 top-1 text-[11px] font-semibold text-slate-400 pointer-events-none">
+                  {safetyBufferType === 'percent' ? '%' : 'ng'}
+                </span>
+              </div>
+            </div>
+
+            {/* Min Stock Retention Checkbox */}
+            <label className="flex items-center gap-2 cursor-pointer ml-1 select-none">
+              <input
+                type="checkbox"
+                checked={includeMinStock}
+                onChange={(e) => setIncludeMinStock(e.target.checked)}
+                className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+              />
+              <span className={`text-xs font-semibold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                Duy trì mức tồn tối thiểu (Min Stock) khi hết kỳ
+              </span>
+            </label>
+          </div>
+
+          {/* Action buttons: Filter needed only, Export Excel, Print */}
+          <div className="flex items-center gap-2 self-start lg:self-center shrink-0">
+            <button
+              type="button"
+              onClick={() => setFilterOnlyNeeded(!filterOnlyNeeded)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 ${
+                filterOnlyNeeded
+                  ? 'bg-rose-600 border-rose-600 text-white shadow-xs'
+                  : darkMode ? 'bg-slate-700/60 border-slate-600 text-slate-300 hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>Chỉ xem mặt hàng cần nhập ({summaryStats.itemsNeededCount})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportPlanningExcel}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 ${
+                darkMode ? 'bg-slate-700/60 border-slate-600 text-slate-300 hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+              title="Xuất file Excel kế hoạch dự trù"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-500" />
+              <span>Xuất Excel</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePrintPlanning}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 ${
+                darkMode ? 'bg-slate-700/60 border-slate-600 text-slate-300 hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+              title="In phiếu dự trù vật tư"
+            >
+              <Printer className="w-3.5 h-3.5 text-blue-500" />
+              <span>In phiếu</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Safety Buffer & Planning Summary Banner */}
+      <div className={`p-4 rounded-2xl border transition-all ${
+        darkMode 
+          ? 'bg-slate-800/90 border-emerald-500/30 shadow-md' 
+          : 'bg-gradient-to-r from-emerald-50/90 via-teal-50/60 to-blue-50/80 border-emerald-200 shadow-sm'
+      }`}>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-emerald-600/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0 mt-0.5">
+              <Shield className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <span className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                  Kế hoạch dự trù an toàn:
+                </span>
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-black bg-emerald-600 text-white shadow-xs">
+                  {safetyBufferType === 'percent' ? `Dư lượng an toàn: +${safetyBufferValue}%` : `Đệm an toàn: +${safetyBufferValue} ngày`}
+                </span>
+                {includeMinStock && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                    + Duy trì tồn Min
+                  </span>
+                )}
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                  Kỳ dự trù: {futurePeriodStats.fullRangeWorkingDays} ngày làm việc
+                </span>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800" title={pastPeriodSummary.label}>
+                  Mẫu tiêu hao: {pastPeriodSummary.workingDays} ngày làm việc thực tế
+                </span>
+              </div>
+
+              <p className={`text-xs leading-relaxed ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+                • Dự trù tương lai: <strong className={darkMode ? 'text-white' : 'text-slate-800'}>{formatDate(planningDate)} → {formatDate(forecastUntilDate)}</strong> ({futurePeriodStats.fullRangeCalendarDays} ngày lịch, đã trừ {futurePeriodStats.fullRangeHolidaysCount} ngày nghỉ).
+                <br />
+                • Dữ liệu tiêu hao quá khứ tham chiếu: <strong className={darkMode ? 'text-indigo-300' : 'text-indigo-700'}>{pastPeriodSummary.label}</strong> (tính trên <strong className="font-bold underline decoration-indigo-400">{pastPeriodSummary.workingDays} ngày làm việc thực tế</strong> sau khi trừ các ngày nghỉ/ngừng hoạt động).
+              </p>
+            </div>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="flex items-center gap-3 self-start md:self-center shrink-0">
+            <div className={`px-3 py-2 rounded-xl border text-center ${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white border-slate-200 shadow-xs'}`}>
+              <span className="text-[10px] uppercase font-bold text-slate-400 block">Cần nhập thêm</span>
+              <span className="text-base font-black text-rose-600 dark:text-rose-400">
+                {summaryStats.itemsNeededCount} <span className="text-xs font-normal">mặt hàng</span>
+              </span>
+            </div>
+            <div className={`px-3 py-2 rounded-xl border text-center ${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white border-slate-200 shadow-xs'}`}>
+              <span className="text-[10px] uppercase font-bold text-slate-400 block">Tổng số lượng bù</span>
+              <span className="text-base font-black text-blue-600 dark:text-blue-400">
+                +{formatQty(summaryStats.totalNeededQuantity)} <span className="text-xs font-normal">đv</span>
+              </span>
+            </div>
+            {summaryStats.totalEstimatedCost > 0 && (
+              <div className={`px-3 py-2 rounded-xl border text-center hidden sm:block ${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block">Ước tính kinh phí</span>
+                <span className="text-base font-black text-slate-900 dark:text-white">
+                  {summaryStats.totalEstimatedCost.toLocaleString('vi-VN')} <span className="text-xs font-normal">đ</span>
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -5750,7 +6410,7 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
             <p className="font-medium mb-2">
               {searchTerm 
                 ? `Không tìm thấy vật tư nào khớp với từ khóa "${searchTerm}".`
-                : 'Không có vật tư nào để dự trù.'}
+                : 'Không có vật tư nào trong danh mục dự trù.'}
             </p>
             {searchTerm && (
               <button
@@ -5787,6 +6447,9 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
                         </span>
                       )}
                       <span className="text-[11px] text-slate-400">Đơn vị: {item.unit}</span>
+                      {Number(item.minStock) > 0 && (
+                        <span className="text-[11px] text-amber-500 font-medium">Min: {item.minStock}</span>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -5796,7 +6459,7 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
                       </span>
                     ) : result ? (
                       <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 whitespace-nowrap">
-                        Đủ dùng
+                        Đủ dùng (Dư {formatQty(result.surplus)})
                       </span>
                     ) : (
                       <span className="text-xs text-slate-400">Chưa tính</span>
@@ -5829,13 +6492,47 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
                   </div>
                 </div>
 
+                {/* Calculation Breakdown: Base + Safety Buffer + Total Demand */}
+                <div className={`py-2 px-3 rounded-xl mb-2 text-xs border ${
+                  darkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'
+                }`}>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <span className="text-[10px] text-slate-400 block">Dùng kỳ:</span>
+                      <span className="font-bold">{result ? formatQty(result.basePeriodUsage) : '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400 block font-semibold">
+                        +{safetyBufferType === 'percent' ? `${safetyBufferValue}%` : `${safetyBufferValue}d`} an toàn:
+                      </span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                        +{result ? formatQty(result.safetyBufferQty) : '-'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-blue-600 dark:text-blue-400 block font-semibold">Tổng dự trù:</span>
+                      <span className="font-bold text-blue-600 dark:text-blue-400">
+                        {result ? formatQty(Math.ceil(result.totalGrossDemand)) : '-'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Depletion Forecast & Daily Usage Footer */}
-                <div className={`pt-2.5 border-t grid grid-cols-2 gap-2 text-xs ${darkMode ? 'border-slate-700/60' : 'border-slate-100'}`}>
+                <div className={`pt-2 border-t grid grid-cols-2 gap-2 text-xs ${darkMode ? 'border-slate-700/60' : 'border-slate-100'}`}>
                   <div>
                     <span className="text-[11px] text-slate-400 uppercase font-semibold block">Tiêu hao TB:</span>
-                    <span className={`font-semibold ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
-                      {result ? `${result.dailyUsage.toFixed(2)} ${item.unit}/ngày` : '-'}
-                    </span>
+                    <div className="flex items-baseline gap-1">
+                      <span className={`font-bold ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                        {result ? result.dailyUsage.toFixed(2) : '-'}
+                      </span>
+                      <span className="text-[11px] text-slate-400">{item.unit}/ngày</span>
+                    </div>
+                    {result && (
+                      <span className="text-[10px] text-slate-400 font-mono block">
+                        ({formatQty(result.pastTotalOut)} ÷ {result.pastWorkingDays}d lv)
+                      </span>
+                    )}
                   </div>
                   <div className="text-right">
                     <span className="text-[11px] text-slate-400 uppercase font-semibold block">Dự kiến hết:</span>
@@ -5856,64 +6553,154 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
 
       {/* Desktop Planning Table View (>= md) */}
       <div className={`hidden md:block rounded-2xl border shadow-sm overflow-hidden ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className={`border-b ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Vật tư</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tồn PM</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center w-32 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tồn thực tế</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tiêu hao/Ngày</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Ngày hết dự kiến</th>
-              <th className={`px-6 py-4 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Cần nhập thêm</th>
-            </tr>
-          </thead>
-          <tbody className={`divide-y ${darkMode ? 'divide-slate-700' : 'divide-slate-100'}`}>
-            {filteredItems.map(item => {
-              const result = results[item.id];
-              return (
-                <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-slate-50'}`}>
-                  <td className="px-6 py-4">
-                    <div className={`font-medium ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</div>
-                    <div className={`text-xs ${darkMode ? 'text-slate-500' : 'text-slate-500'}`}>{item.unit}</div>
-                  </td>
-                  <td className={`px-6 py-4 text-center font-semibold ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>{formatQty(item.currentStock)}</td>
-                  <td className="px-6 py-4 text-center">
-                    <input 
-                      type="number" 
-                      step="any"
-                      value={actualStockData[item.id] ?? ''}
-                      placeholder={item.currentStock.toString()}
-                      onChange={(e) => {
-                        setActualStockData(prev => ({ ...prev, [item.id]: e.target.value }));
-                      }}
-                      className={`w-20 px-2 py-1 text-center border rounded focus:ring-2 focus:ring-blue-500 font-bold ${darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-200 text-slate-900'}`}
-                    />
-                  </td>
-                  <td className={`px-6 py-4 text-center ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
-                    {result ? result.dailyUsage.toFixed(2) : '-'}
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    {result ? (
-                      <span className={`px-2 py-1 rounded-full text-xs font-bold ${
-                        result.depletionDate === 'N/A' ? (darkMode ? 'bg-slate-700 text-slate-400' : 'bg-slate-100 text-slate-500') :
-                        (darkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600')
-                      }`}>
-                        {result.depletionDate}
-                      </span>
-                    ) : '-'}
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    {result && result.needed > 0 ? (
-                      <span className="text-red-600 font-bold">+{formatQty(result.needed)}</span>
-                    ) : result ? (
-                      <span className="text-emerald-600 font-bold">Đủ dùng</span>
-                    ) : '-'}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse min-w-[980px]">
+            <thead>
+              <tr className={`border-b ${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
+                <th className={`px-4 py-3.5 text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Vật tư</th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Tồn PM</th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center w-28 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Tồn thực tế</th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                  Tiêu hao/Ngày
+                  <span className="block text-[10px] normal-case font-normal text-slate-400 font-mono">
+                    (Xuất ÷ {pastPeriodSummary.workingDays}d)
+                  </span>
+                </th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Dùng trong kỳ</th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>
+                  Dư lượng an toàn ({safetyBufferType === 'percent' ? `+${safetyBufferValue}%` : `+${safetyBufferValue}d`})
+                </th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-blue-400' : 'text-blue-700'}`}>Tổng nhu cầu</th>
+                <th className={`px-3 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Dự kiến hết</th>
+                <th className={`px-4 py-3.5 text-xs font-bold uppercase tracking-wider text-center ${darkMode ? 'text-rose-400' : 'text-rose-700'}`}>Cần nhập thêm</th>
+              </tr>
+            </thead>
+            <tbody className={`divide-y ${darkMode ? 'divide-slate-700' : 'divide-slate-200'}`}>
+              {filteredItems.map(item => {
+                const result = results[item.id];
+                const category = categories.find(c => c.id === item.categoryId);
+
+                return (
+                  <tr key={item.id} className={`transition-colors ${darkMode ? 'hover:bg-slate-700/50' : 'hover:bg-blue-50/40'}`}>
+                    {/* Item info */}
+                    <td className="px-4 py-3">
+                      <div className={`font-semibold text-sm ${darkMode ? 'text-white' : 'text-slate-900'}`}>{item.name}</div>
+                      <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5">
+                        <span>ĐVT: {item.unit}</span>
+                        {category && <span>· {category.name}</span>}
+                        {Number(item.minStock) > 0 && <span className="text-amber-500 font-medium">· Min: {item.minStock}</span>}
+                      </div>
+                    </td>
+
+                    {/* Stock PM */}
+                    <td className={`px-3 py-3 text-center font-bold text-sm ${darkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                      {formatQty(item.currentStock)}
+                    </td>
+
+                    {/* Stock Actual Input */}
+                    <td className="px-3 py-3 text-center">
+                      <input 
+                        type="number" 
+                        step="any"
+                        value={actualStockData[item.id] ?? ''}
+                        placeholder={item.currentStock.toString()}
+                        onChange={(e) => {
+                          setActualStockData(prev => ({ ...prev, [item.id]: e.target.value }));
+                        }}
+                        className={`w-20 px-2 py-1 text-center border rounded-lg focus:ring-2 focus:ring-blue-500 text-xs font-bold ${
+                          darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900'
+                        }`}
+                        title="Nhập tồn thực tế kiểm tra (bỏ trống để lấy bằng Tồn PM)"
+                      />
+                    </td>
+
+                    {/* Daily Usage */}
+                    <td className="px-3 py-3 text-center">
+                      {result ? (
+                        <div className="inline-flex flex-col items-center">
+                          <span className={`text-sm font-bold ${darkMode ? 'text-slate-100' : 'text-slate-800'}`}>
+                            {result.dailyUsage.toFixed(2)}
+                          </span>
+                          <span 
+                            className="text-[10px] text-slate-400 dark:text-slate-500 font-mono tracking-tight"
+                            title={`Tổng lượng xuất trong kỳ: ${formatQty(result.pastTotalOut)} ${item.unit} trong ${result.pastWorkingDays} ngày làm việc thực tế`}
+                          >
+                            ({formatQty(result.pastTotalOut)} ÷ {result.pastWorkingDays}d)
+                          </span>
+                        </div>
+                      ) : '-'}
+                    </td>
+
+                    {/* Base period usage */}
+                    <td className={`px-3 py-3 text-center text-xs font-semibold ${darkMode ? 'text-slate-200' : 'text-slate-800'}`}>
+                      {result ? formatQty(result.basePeriodUsage) : '-'}
+                    </td>
+
+                    {/* Safety Buffer Qty */}
+                    <td className="px-3 py-3 text-center">
+                      {result ? (
+                        <div className="inline-flex flex-col items-center">
+                          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                            +{formatQty(result.safetyBufferQty)}
+                          </span>
+                          {includeMinStock && Number(item.minStock) > 0 && (
+                            <span className="text-[10px] text-blue-600 dark:text-blue-400 mt-0.5">
+                              +Min: {item.minStock}
+                            </span>
+                          )}
+                        </div>
+                      ) : '-'}
+                    </td>
+
+                    {/* Total Gross Demand */}
+                    <td className="px-3 py-3 text-center">
+                      {result ? (
+                        <span className="text-xs font-black text-blue-600 dark:text-blue-400">
+                          {formatQty(Math.ceil(result.totalGrossDemand))}
+                        </span>
+                      ) : '-'}
+                    </td>
+
+                    {/* Estimated Depletion Date */}
+                    <td className="px-3 py-3 text-center">
+                      {result ? (
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                          result.depletionDate === 'N/A' 
+                            ? (darkMode ? 'bg-slate-700 text-slate-400' : 'bg-slate-100 text-slate-500') 
+                            : result.depletionDate === '> 2 năm'
+                            ? (darkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600')
+                            : (darkMode ? 'bg-amber-900/40 text-amber-300 border border-amber-800' : 'bg-amber-50 text-amber-700 border border-amber-200')
+                        }`}>
+                          {result.depletionDate}
+                        </span>
+                      ) : '-'}
+                    </td>
+
+                    {/* Replenishment Needed */}
+                    <td className="px-4 py-3 text-center">
+                      {result && result.needed > 0 ? (
+                        <div className="inline-flex flex-col items-center">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-black bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                            +{formatQty(result.needed)} {item.unit}
+                          </span>
+                          {item.price ? (
+                            <span className="text-[10px] text-slate-400 mt-0.5">
+                              ~{(result.needed * item.price).toLocaleString('vi-VN')} đ
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : result ? (
+                        <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                          Đủ dùng
+                        </span>
+                      ) : '-'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Mobile Sticky Quick Search Bar (docked directly above bottom nav) */}
@@ -5929,7 +6716,25 @@ function InventoryPlanning({ items, transactions, categories, holidays, globalSe
   );
 }
 
-function Reports({ transactions, items, categories, departments, holidays, globalSearch, darkMode }: { transactions: Transaction[], items: Item[], categories: Category[], departments: Department[], holidays: Holiday[], globalSearch: string, darkMode?: boolean }) {
+function Reports({ 
+  transactions, 
+  items, 
+  categories, 
+  departments, 
+  holidays, 
+  globalSearch, 
+  darkMode,
+  onNavigateHolidays
+}: { 
+  transactions: Transaction[], 
+  items: Item[], 
+  categories: Category[], 
+  departments: Department[], 
+  holidays: Holiday[], 
+  globalSearch: string, 
+  darkMode?: boolean,
+  onNavigateHolidays?: () => void
+}) {
   const [reportType, setReportType] = useState<'custom' | 'week' | 'month' | 'quarter' | 'year'>('month');
   
   const getLocalYYYYMMDD = (date: Date) => {
@@ -5955,6 +6760,7 @@ function Reports({ transactions, items, categories, departments, holidays, globa
   });
   const [filterDeptId, setFilterDeptId] = useState('');
   const [expandedReportItemIds, setExpandedReportItemIds] = useState<string[]>([]);
+  const [showWorkingDaysDetail, setShowWorkingDaysDetail] = useState(false);
 
   const toggleExpandReportItem = (itemId: string) => {
     setExpandedReportItemIds(prev => prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId]);
@@ -5994,10 +6800,14 @@ function Reports({ transactions, items, categories, departments, holidays, globa
   const startDateTime = useMemo(() => new Date(startDate + 'T00:00:00').getTime(), [startDate]);
   const endDateTime = useMemo(() => new Date(endDate + 'T23:59:59').getTime(), [endDate]);
 
-  // Calculate actual working days in range
-  const workingDaysInRange = useMemo(() => {
-    return Math.max(1, getWorkingDays(new Date(startDate + 'T00:00:00'), new Date(endDate + 'T00:00:00'), holidays));
+  // Calculate actual working days in range with future cutoff and holiday exclusions
+  const workingDaysInfo = useMemo(() => {
+    return calculateWorkingDaysWithFutureCutoff(startDate, endDate, holidays);
   }, [startDate, endDate, holidays]);
+
+  const workingDaysInRange = useMemo(() => {
+    return Math.max(1, workingDaysInfo.actualWorkingDays > 0 ? workingDaysInfo.actualWorkingDays : workingDaysInfo.fullRangeWorkingDays);
+  }, [workingDaysInfo]);
 
   // Pre-group transactions by itemId for performance
   const transactionsByItem = useMemo(() => {
@@ -6525,6 +7335,116 @@ function Reports({ transactions, items, categories, departments, holidays, globa
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Thông báo số ngày làm việc thực tế (có trừ ngày nghỉ & xử lý mốc tương lai) */}
+      <div className={`mb-6 p-3 sm:p-4 rounded-2xl border transition-all ${
+        darkMode 
+          ? 'bg-slate-800/90 border-blue-500/30 shadow-md' 
+          : 'bg-gradient-to-r from-blue-50/90 via-sky-50/70 to-indigo-50/80 border-blue-200 shadow-sm'
+      }`}>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`p-2 rounded-xl shrink-0 ${
+              workingDaysInfo.isFutureEnd 
+                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30' 
+                : 'bg-blue-600/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
+            }`}>
+              {workingDaysInfo.isFutureEnd ? (
+                <Clock className="w-5 h-5" />
+              ) : (
+                <Calendar className="w-5 h-5" />
+              )}
+            </div>
+            
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                Số ngày làm việc thực tế:
+              </span>
+              <span className="inline-flex items-center px-3 py-0.5 rounded-full text-sm font-black bg-blue-600 text-white shadow-sm">
+                {workingDaysInfo.actualWorkingDays} ngày
+              </span>
+              {workingDaysInfo.isFutureEnd && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                  ⚡ Mốc kết thúc ở tương lai
+                </span>
+              )}
+              {workingDaysInfo.actualHolidaysDeducted > 0 && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                  Đã trừ {workingDaysInfo.actualHolidaysDeducted} ngày nghỉ
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-start md:self-center">
+            {/* Nút hiển thị / ẩn chi tiết */}
+            <button
+              type="button"
+              onClick={() => setShowWorkingDaysDetail(prev => !prev)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
+                showWorkingDaysDetail
+                  ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
+                  : darkMode 
+                  ? 'bg-slate-700/80 border-slate-600 text-slate-200 hover:bg-slate-700' 
+                  : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50 shadow-xs'
+              }`}
+              title={showWorkingDaysDetail ? "Thu gọn chi tiết giải thích" : "Xem chi tiết cách tính số ngày"}
+            >
+              <Info className="w-3.5 h-3.5" />
+              <span>{showWorkingDaysDetail ? 'Ẩn chi tiết' : 'Hiển thị chi tiết'}</span>
+              {showWorkingDaysDetail ? (
+                <ChevronUp className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5" />
+              )}
+            </button>
+
+            {onNavigateHolidays && (
+              <button
+                type="button"
+                onClick={onNavigateHolidays}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  darkMode 
+                    ? 'bg-slate-700/80 border-slate-600 text-slate-200 hover:bg-slate-700' 
+                    : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50 shadow-xs'
+                }`}
+                title="Xem và chỉnh sửa danh sách ngày nghỉ"
+              >
+                <Calendar className="w-3.5 h-3.5 text-blue-500" />
+                <span>Xem ngày nghỉ ({holidays.length})</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Nội dung chi tiết chỉ hiển thị khi bấm 'Hiển thị chi tiết' */}
+        {showWorkingDaysDetail && (
+          <div className={`mt-3 pt-3 border-t text-xs leading-relaxed animate-in fade-in duration-200 ${
+            darkMode ? 'border-slate-700/80 text-slate-300' : 'border-blue-200/60 text-slate-600'
+          }`}>
+            {workingDaysInfo.isFutureStart ? (
+              <p>
+                Khoảng thời gian chọn: <strong className={darkMode ? 'text-white' : 'text-slate-800'}>{formatDate(startDate)} → {formatDate(endDate)}</strong> ({workingDaysInfo.fullRangeCalendarDays} ngày lịch). 
+                Toàn bộ thời gian nằm ở tương lai (sau hôm nay {formatDate(workingDaysInfo.todayStr)}). Số ngày làm việc thực tế đã qua: <strong>0 ngày</strong> (Dự kiến toàn kỳ: <strong>{workingDaysInfo.fullRangeWorkingDays} ngày làm việc</strong>, trừ {workingDaysInfo.fullRangeHolidaysCount} ngày nghỉ).
+              </p>
+            ) : workingDaysInfo.isFutureEnd ? (
+              <div className="space-y-1">
+                <p>
+                  Khoảng thời gian đã chọn: <strong className={darkMode ? 'text-white' : 'text-slate-800'}>{formatDate(startDate)} → {formatDate(endDate)}</strong> (Dự kiến toàn kỳ: <strong>{workingDaysInfo.fullRangeWorkingDays} ngày làm việc</strong> / {workingDaysInfo.fullRangeCalendarDays} ngày lịch, đã trừ {workingDaysInfo.fullRangeHolidaysCount} ngày nghỉ).
+                </p>
+                <p className="text-amber-700 dark:text-amber-300 font-medium">
+                  ↳ Do mốc kết thúc nằm ở tương lai, hệ thống tự động tính từ mốc bắt đầu (<strong>{formatDate(startDate)}</strong>) đến hiện tại (<strong>{formatDate(workingDaysInfo.todayStr)}</strong>) là <strong className="font-bold underline decoration-amber-500">{workingDaysInfo.actualWorkingDays} ngày làm việc thực tế</strong> (đã khấu trừ <strong>{workingDaysInfo.actualHolidaysDeducted} ngày nghỉ</strong> trong mục Ngày nghỉ) để phản ánh chính xác tốc độ tiêu hao thực tế.
+                </p>
+              </div>
+            ) : (
+              <p>
+                Khoảng thời gian: <strong className={darkMode ? 'text-white' : 'text-slate-800'}>{formatDate(startDate)} → {formatDate(endDate)}</strong> ({workingDaysInfo.actualCalendarDays} ngày lịch). 
+                Đã trừ <strong>{workingDaysInfo.actualHolidaysDeducted} ngày nghỉ lễ/nghỉ trực</strong> trong mục "Ngày nghỉ". Số ngày làm việc thực tế phục vụ tính định mức tiêu hao trung bình/ngày: <strong className="font-bold text-blue-600 dark:text-blue-400">{workingDaysInfo.actualWorkingDays} ngày</strong>.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Summary Metrics */}
@@ -7601,43 +8521,7 @@ function AiAssistant({
                           <div className={`prose max-w-none text-sm ${darkMode ? 'prose-invert text-slate-100' : 'text-slate-800'}`}>
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm]}
-                              components={{
-                                table: ({ node, ...props }) => (
-                                  <div className="my-3 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-800/90">
-                                    <table className="w-full text-left text-xs border-collapse divide-y divide-slate-200 dark:divide-slate-700 min-w-[550px]" {...props} />
-                                  </div>
-                                ),
-                                thead: ({ node, ...props }) => (
-                                  <thead className="bg-slate-100 dark:bg-slate-700/80 text-slate-800 dark:text-slate-100 font-bold border-b border-slate-200 dark:border-slate-600" {...props} />
-                                ),
-                                th: ({ node, ...props }) => (
-                                  <th className="px-3 py-2.5 font-bold uppercase tracking-wider text-[11px] whitespace-nowrap text-slate-700 dark:text-slate-200" {...props} />
-                                ),
-                                tbody: ({ node, ...props }) => (
-                                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60" {...props} />
-                                ),
-                                tr: ({ node, ...props }) => (
-                                  <tr className="hover:bg-blue-50/40 dark:hover:bg-slate-700/40 transition-colors odd:bg-transparent even:bg-slate-50/50 dark:even:bg-slate-800/40" {...props} />
-                                ),
-                                td: ({ node, ...props }) => (
-                                  <td className="px-3 py-2 text-slate-700 dark:text-slate-200 text-xs whitespace-nowrap" {...props} />
-                                ),
-                                p: ({ node, ...props }) => (
-                                  <p className="my-1.5 leading-relaxed" {...props} />
-                                ),
-                                ul: ({ node, ...props }) => (
-                                  <ul className="my-2 space-y-1 pl-5 list-disc" {...props} />
-                                ),
-                                ol: ({ node, ...props }) => (
-                                  <ol className="my-2 space-y-1 pl-5 list-decimal" {...props} />
-                                ),
-                                li: ({ node, ...props }) => (
-                                  <li className="leading-relaxed" {...props} />
-                                ),
-                                h3: ({ node, ...props }) => (
-                                  <h3 className="text-base font-bold text-slate-900 dark:text-white mt-3 mb-2 flex items-center gap-1.5" {...props} />
-                                ),
-                              }}
+                              components={createAiMarkdownComponents(!!darkMode)}
                             >
                               {m.text}
                             </ReactMarkdown>
@@ -7837,7 +8721,12 @@ function AiAssistant({
                   <FileText className="w-6 h-6" />
                   <span className="font-bold text-lg">Báo cáo phân tích chi tiết</span>
                 </div>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis.detailedAnalysis}</ReactMarkdown>
+                <ReactMarkdown 
+                  remarkPlugins={[remarkGfm]}
+                  components={createAiMarkdownComponents(!!darkMode)}
+                >
+                  {analysis.detailedAnalysis}
+                </ReactMarkdown>
               </div>
             </div>
           ) : (
