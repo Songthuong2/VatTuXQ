@@ -3557,9 +3557,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                       <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800 shrink-0">
                         {item.code}
                       </span>
-                    ) : (
-                      <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono">VT----</span>
-                    )}
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase whitespace-nowrap border ${
