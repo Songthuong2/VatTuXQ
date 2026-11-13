@@ -54,8 +54,11 @@ import {
   Bot,
   Shield,
   Percent,
-  Printer
+  Printer,
+  ScanLine,
+  QrCode
 } from 'lucide-react';
+import { BarcodeScannerModal } from './BarcodeScannerModal';
 import { GoogleSheetsHub } from './GoogleSheetsHub';
 import { UsersManager, StaffUser } from './UsersManager';
 import { 
@@ -111,14 +114,14 @@ import {
 } from 'recharts';
 
 // --- Types ---
-interface Category { 
+export interface Category { 
   id: string; 
   name: string; 
   code?: string;
   description?: string;
   status?: string;
 }
-interface Department { 
+export interface Department { 
   id: string; 
   name: string; 
   code?: string;
@@ -127,7 +130,7 @@ interface Department {
   location?: string;
   note?: string;
 }
-interface ItemBatch {
+export interface ItemBatch {
   id: string;
   batchNumber: string; // Số lô (vd: LO-2026-01)
   quantity: number; // Số lượng tồn của lô này
@@ -136,10 +139,11 @@ interface ItemBatch {
   note?: string; // Ghi chú lô
 }
 
-interface Item { 
+export interface Item { 
   id: string; 
   name: string; 
   code?: string;
+  barcode?: string;
   categoryId: string; 
   departmentId?: string;
   unit: string; 
@@ -153,12 +157,12 @@ interface Item {
   batches?: ItemBatch[];
   createdAt?: any;
 }
-interface Holiday {
+export interface Holiday {
   id: string;
   date: string;
   note?: string;
 }
-interface Transaction {
+export interface Transaction {
   id: string;
   code?: string;
   itemId: string;
@@ -185,7 +189,7 @@ interface AiAnalysis {
 }
 
 // --- Utils ---
-enum OperationType {
+export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
   DELETE = 'delete',
@@ -213,7 +217,7 @@ interface FirestoreErrorInfo {
   }
 }
 
-const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+export const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -236,7 +240,7 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
-const formatDate = (dateStr: string | undefined) => {
+export const formatDate = (dateStr: string | undefined) => {
   if (!dateStr) return '-';
   // Input is usually yyyy-mm-dd from <input type="date">
   const parts = dateStr.split('-');
@@ -249,7 +253,7 @@ const formatDate = (dateStr: string | undefined) => {
   return dateStr;
 };
 
-const formatQty = (num: number | string | undefined) => {
+export const formatQty = (num: number | string | undefined) => {
   if (num === undefined || num === null) return '0';
   const n = typeof num === 'string' ? parseFloat(num) : num;
   if (isNaN(n)) return '0';
@@ -524,7 +528,7 @@ const createAiMarkdownComponents = (_isDark: boolean) => ({
 });
 
 // Batch Management Helpers
-const getItemBatches = (item: Item): ItemBatch[] => {
+export const getItemBatches = (item: Item): ItemBatch[] => {
   if (item.batches && Array.isArray(item.batches) && item.batches.length > 0) {
     return item.batches;
   }
@@ -540,7 +544,7 @@ const getItemBatches = (item: Item): ItemBatch[] => {
   return [];
 };
 
-const syncBatchesToItem = (batches: ItemBatch[]): { currentStock: number; expiryDate: string } => {
+export const syncBatchesToItem = (batches: ItemBatch[]): { currentStock: number; expiryDate: string } => {
   const currentStock = Number(batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0).toFixed(10));
   // Earliest expiry date among batches with positive quantity
   const activeBatchesWithExpiry = batches
@@ -660,6 +664,7 @@ export default function App() {
   const [globalSearch, setGlobalSearch] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [showMobileSearch, setShowMobileSearch] = useState(false);
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1417,6 +1422,22 @@ export default function App() {
 
             {/* Right Tools & Profile Zone (Strictly Sized & Non-Overflowing) */}
             <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              {/* Mobile Barcode Scanner Button (< md) */}
+              <button
+                type="button"
+                onClick={() => setShowBarcodeScanner(true)}
+                title="Quét mã vạch / QR vật tư"
+                className={`md:hidden p-1.5 sm:p-2 rounded-xl transition-all border shrink-0 cursor-pointer flex items-center gap-1 ${
+                  isMedical
+                    ? 'bg-emerald-500/90 text-white border-emerald-300/60 hover:bg-emerald-500 shadow-sm'
+                    : darkMode
+                    ? 'bg-blue-600/90 text-white border-blue-500 hover:bg-blue-600'
+                    : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                <ScanLine className="w-4 h-4" />
+              </button>
+
               {/* Mobile Search Toggle Button (< md) */}
               <button 
                 onClick={() => setShowMobileSearch(prev => !prev)}
@@ -1779,8 +1800,8 @@ export default function App() {
               darkMode={darkMode}
             />
           )}
-          {activeTab === 'inventory' && <Inventory items={items} transactions={transactions} categories={categories} departments={departments} globalSearch={globalSearch} darkMode={darkMode} />}
-          {activeTab === 'transactions' && <Transactions transactions={transactions} items={items} departments={departments} categories={categories} globalSearch={globalSearch} darkMode={darkMode} />}
+          {activeTab === 'inventory' && <Inventory items={items} transactions={transactions} categories={categories} departments={departments} globalSearch={globalSearch} darkMode={darkMode} onOpenScanner={() => setShowBarcodeScanner(true)} />}
+          {activeTab === 'transactions' && <Transactions transactions={transactions} items={items} departments={departments} categories={categories} globalSearch={globalSearch} darkMode={darkMode} onOpenScanner={() => setShowBarcodeScanner(true)} />}
           {activeTab === 'audit' && <InventoryAudit items={items} categories={categories} globalSearch={globalSearch} darkMode={darkMode} />}
           {activeTab === 'planning' && <InventoryPlanning items={items} transactions={transactions} categories={categories} holidays={holidays} globalSearch={globalSearch} darkMode={darkMode} />}
           {activeTab === 'reports' && (
@@ -1841,7 +1862,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setActiveTab('inventory')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[52px] transition-colors ${
               activeTab === 'inventory' 
                 ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
                 : 'hover:text-slate-900 dark:hover:text-white'
@@ -1854,7 +1875,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setActiveTab('transactions')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[52px] transition-colors ${
               activeTab === 'transactions' 
                 ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
                 : 'hover:text-slate-900 dark:hover:text-white'
@@ -1864,23 +1885,25 @@ export default function App() {
             <span className="text-[10px] whitespace-nowrap">Giao dịch</span>
           </button>
 
+          {/* Center Quick Barcode Scan Button */}
           <button
             type="button"
-            onClick={() => setActiveTab('audit')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
-              activeTab === 'audit' 
-                ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
-                : 'hover:text-slate-900 dark:hover:text-white'
-            }`}
+            onClick={() => setShowBarcodeScanner(true)}
+            className="flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[60px] -mt-3 cursor-pointer group"
+            title="Quét mã vạch vật tư"
           >
-            <ClipboardCheck className="w-5 h-5 mb-0.5" />
-            <span className="text-[10px] whitespace-nowrap">Kiểm kê</span>
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-600/30 flex items-center justify-center border-2 border-white dark:border-slate-900 group-active:scale-95 transition-transform">
+              <ScanLine className="w-5 h-5" />
+            </div>
+            <span className={`text-[10px] font-bold whitespace-nowrap mt-0.5 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+              Quét mã
+            </span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('planning')}
-            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] transition-colors ${
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[52px] transition-colors ${
               activeTab === 'planning' 
                 ? (darkMode ? 'text-blue-400 font-bold' : 'text-blue-600 font-bold') 
                 : 'hover:text-slate-900 dark:hover:text-white'
@@ -1893,7 +1916,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setSidebarOpen(true)}
-            className="flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[56px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors"
+            className="flex flex-col items-center justify-center flex-1 h-full py-1 min-w-[52px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors"
           >
             <Menu className="w-5 h-5 mb-0.5" />
             <span className="text-[10px] whitespace-nowrap">Thêm</span>
@@ -1930,6 +1953,19 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Mobile Barcode & QR Scanner Modal */}
+      <BarcodeScannerModal
+        isOpen={showBarcodeScanner}
+        onClose={() => setShowBarcodeScanner(false)}
+        items={items}
+        categories={categories}
+        departments={departments}
+        darkMode={darkMode}
+        isMedical={isMedical}
+        currentUserId={user?.uid}
+        currentUserName={usersList.find(u => u.email === user?.email)?.name || user?.displayName || user?.email || 'Cán bộ kho'}
+      />
     </div>
     </ErrorBoundary>
   );
@@ -2748,13 +2784,14 @@ function RoomSelect({
   );
 }
 
-function Inventory({ items, transactions, categories, departments, globalSearch, darkMode }: { items: Item[], transactions: Transaction[], categories: Category[], departments: Department[], globalSearch: string, darkMode?: boolean }) {
+function Inventory({ items, transactions, categories, departments, globalSearch, darkMode, onOpenScanner }: { items: Item[], transactions: Transaction[], categories: Category[], departments: Department[], globalSearch: string, darkMode?: boolean, onOpenScanner?: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [newItem, setNewItem] = useState({ 
     name: '', 
     code: '',
+    barcode: '',
     categoryId: '', 
     departmentId: '', 
     unit: '', 
@@ -2771,6 +2808,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
   const [editForm, setEditForm] = useState({ 
     name: '', 
     code: '',
+    barcode: '',
     categoryId: '', 
     departmentId: '', 
     unit: '', 
@@ -2915,6 +2953,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
     setNewItem({
       name: item.name,
       code: item.code || '',
+      barcode: item.barcode || '',
       categoryId: item.categoryId,
       departmentId: item.departmentId || '',
       unit: item.unit,
@@ -2997,6 +3036,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
       const itemRef = await addDoc(collection(db, "items"), {
         name: newItem.name,
         code: newItem.code,
+        barcode: newItem.barcode.trim(),
         categoryId: newItem.categoryId,
         departmentId: newItem.departmentId,
         unit: newItem.unit,
@@ -3032,6 +3072,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
       setNewItem({ 
         name: '', 
         code: '',
+        barcode: '',
         categoryId: '', 
         departmentId: '', 
         unit: '', 
@@ -3055,6 +3096,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
     setEditForm({
       name: item.name,
       code: item.code || '',
+      barcode: item.barcode || '',
       categoryId: item.categoryId,
       departmentId: item.departmentId || '',
       unit: item.unit,
@@ -3258,11 +3300,13 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
         const matchesSearch = (
           matchesSearchQuery(item.name, searchTerm) ||
           matchesSearchQuery(item.code, searchTerm) ||
+          matchesSearchQuery(item.barcode, searchTerm) ||
           matchesSearchQuery(item.specification, searchTerm) ||
           matchesSearchQuery(item.manufacturer, searchTerm)
         ) && (
           matchesSearchQuery(item.name, globalSearch) ||
-          matchesSearchQuery(item.code, globalSearch)
+          matchesSearchQuery(item.code, globalSearch) ||
+          matchesSearchQuery(item.barcode, globalSearch)
         );
         
         let matchesCategory = true;
@@ -3418,9 +3462,19 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
               </button>
             )}
             
+            {onOpenScanner && (
+              <button
+                type="button"
+                onClick={onOpenScanner}
+                className="md:hidden flex-1 sm:flex-none justify-center px-3.5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold flex items-center gap-1.5 hover:bg-emerald-700 transition-all shadow-md shadow-emerald-500/20 active:scale-95 cursor-pointer"
+              >
+                <ScanLine className="w-4 h-4" /> <span>Quét mã</span>
+              </button>
+            )}
+
             <button 
               onClick={() => setShowAdd(true)}
-              className="w-full sm:w-auto justify-center px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 active:scale-95 cursor-pointer"
+              className="flex-1 sm:w-auto justify-center px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 active:scale-95 cursor-pointer"
             >
               <Plus className="w-4 h-4" /> <span>Thêm vật tư</span>
             </button>
@@ -3556,6 +3610,12 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                     {item.code ? (
                       <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-bold border border-blue-100 dark:border-blue-800 shrink-0">
                         {item.code}
+                      </span>
+                    ) : null}
+                    {item.barcode && item.barcode !== item.code ? (
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 font-semibold border border-emerald-200 dark:border-emerald-800 shrink-0 flex items-center gap-1">
+                        <QrCode className="w-2.5 h-2.5" />
+                        {item.barcode}
                       </span>
                     ) : null}
                   </div>
@@ -3955,15 +4015,27 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 </div>
               </div>
 
-              <div>
-                <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Ghi chú & Điều kiện bảo quản</label>
-                <input 
-                  type="text" 
-                  placeholder="Bảo quản 15-25°C, tránh ánh sáng..."
-                  className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
-                  value={newItem.note} 
-                  onChange={e => setNewItem({...newItem, note: e.target.value})} 
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Mã vạch / Barcode (nếu có)</label>
+                  <input 
+                    type="text" 
+                    placeholder="Ví dụ: 8935001234567..."
+                    className={`w-full px-3 py-2 border rounded-xl font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                    value={newItem.barcode} 
+                    onChange={e => setNewItem({...newItem, barcode: e.target.value})} 
+                  />
+                </div>
+                <div>
+                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Ghi chú & Điều kiện bảo quản</label>
+                  <input 
+                    type="text" 
+                    placeholder="Bảo quản 15-25°C, tránh ánh sáng..."
+                    className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                    value={newItem.note} 
+                    onChange={e => setNewItem({...newItem, note: e.target.value})} 
+                  />
+                </div>
               </div>
 
               <div className="pt-2">
@@ -4096,9 +4168,21 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
                 </button>
               </div>
 
-              <div>
-                <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Hạn sử dụng</label>
-                <input type="date" className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} value={editForm.expiryDate} onChange={e => setEditForm({...editForm, expiryDate: e.target.value})} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Hạn sử dụng</label>
+                  <input type="date" className={`w-full px-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} value={editForm.expiryDate} onChange={e => setEditForm({...editForm, expiryDate: e.target.value})} />
+                </div>
+                <div>
+                  <label className={`block text-xs font-semibold mb-1 ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>Mã vạch / Barcode</label>
+                  <input 
+                    type="text" 
+                    placeholder="893500..."
+                    className={`w-full px-3 py-2 border rounded-xl font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none ${darkMode ? 'bg-slate-700 border-slate-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'}`} 
+                    value={editForm.barcode} 
+                    onChange={e => setEditForm({...editForm, barcode: e.target.value})} 
+                  />
+                </div>
               </div>
 
               <div>
@@ -4424,7 +4508,7 @@ function Inventory({ items, transactions, categories, departments, globalSearch,
   );
 }
 
-function Transactions({ transactions, items, departments, categories, globalSearch, darkMode }: { transactions: Transaction[], items: Item[], departments: Department[], categories: Category[], globalSearch: string, darkMode?: boolean }) {
+function Transactions({ transactions, items, departments, categories, globalSearch, darkMode, onOpenScanner }: { transactions: Transaction[], items: Item[], departments: Department[], categories: Category[], globalSearch: string, darkMode?: boolean, onOpenScanner?: () => void }) {
   const [showAdd, setShowAdd] = useState(false);
   const [newTrans, setNewTrans] = useState({ 
     itemId: '', 
@@ -4455,9 +4539,14 @@ function Transactions({ transactions, items, departments, categories, globalSear
     }
     
     if (globalSearch) {
+      const q = globalSearch.toLowerCase();
       filtered = filtered.filter(t => {
         const item = items.find(i => i.id === t.itemId);
-        return item?.name.toLowerCase().includes(globalSearch.toLowerCase());
+        return (
+          item?.name.toLowerCase().includes(q) ||
+          item?.code?.toLowerCase().includes(q) ||
+          item?.barcode?.toLowerCase().includes(q)
+        );
       });
     }
 
@@ -4818,6 +4907,16 @@ function Transactions({ transactions, items, departments, categories, globalSear
           )}
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
+          {onOpenScanner && (
+            <button
+              type="button"
+              onClick={onOpenScanner}
+              className="md:hidden px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold flex items-center gap-1.5 transition-colors shadow-lg shadow-indigo-500/20 active:scale-95 cursor-pointer"
+              title="Quét mã vạch nhập/xuất/chuyển nhanh"
+            >
+              <ScanLine className="w-4 h-4" /> Quét mã
+            </button>
+          )}
           <button 
             onClick={handleExportTransExcel}
             className={`hidden sm:flex px-4 py-2 border rounded-xl text-sm font-medium items-center gap-2 transition-colors cursor-pointer ${

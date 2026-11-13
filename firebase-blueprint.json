@@ -33,6 +33,7 @@
       "properties": {
         "name": { "type": "string", "description": "TenVatTu - Name of the item" },
         "code": { "type": "string", "description": "MaVatTu - Item code e.g. VT-XQ-01" },
+        "barcode": { "type": "string", "description": "MaVach - Manufacturer barcode or QR code", "maxLength": 100 },
         "categoryId": { "type": "string", "description": "MaNhom - ID of category" },
         "departmentId": { "type": "string", "description": "MaPhongBan - ID of department" },
         "unit": { "type": "string", "description": "DonViTinh - Unit of measurement" },
@@ -43,6 +44,7 @@
         "expiryDate": { "type": "string", "format": "date", "description": "HanSuDung - Expiry date (YYYY-MM-DD)" },
         "price": { "type": "number", "description": "DonGia - Unit price" },
         "note": { "type": "string", "description": "GhiChu - Notes and storage instructions" },
+        "batches": { "type": "array", "description": "CacLoChiTiet - Lot/Batch inventory tracking details" },
         "createdAt": { "type": "object", "description": "Timestamp when the item was created" }
       },
       "required": ["name", "categoryId", "unit", "minStock", "currentStock"]
@@ -60,6 +62,7 @@
         "quantity": { "type": "number", "description": "SoLuong - Quantity moved" },
         "unitPrice": { "type": "number", "description": "DonGia - Price per unit" },
         "totalAmount": { "type": "number", "description": "ThanhTien - Total cost" },
+        "batchId": { "type": "string", "description": "MaLoId - Batch identifier", "maxLength": 100 },
         "batchNumber": { "type": "string", "description": "SoLo - Batch / Lot number" },
         "batchExpiry": { "type": "string", "description": "HanDung - Expiry date of batch" },
         "performer": { "type": "string", "description": "NguoiThucHien - Staff performing transaction" },
