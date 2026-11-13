@@ -59,6 +59,7 @@ import {
   QrCode
 } from 'lucide-react';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
+import { PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
 import { GoogleSheetsHub } from './GoogleSheetsHub';
 import { UsersManager, StaffUser } from './UsersManager';
 import { 
@@ -992,8 +993,9 @@ export default function App() {
         }`}>
           <Toaster position="top-right" richColors />
 
-          {/* Quick theme selector on login screen */}
-          <div className="absolute top-4 right-4">
+          {/* Quick PWA install & theme selector on login screen */}
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <PWAInstallButton variant="header" darkMode={darkMode} isMedical={false} />
             <button 
               onClick={() => {
                 const nextTheme = theme === 'medical' ? 'light' : theme === 'light' ? 'dark' : 'medical';
@@ -1009,6 +1011,7 @@ export default function App() {
               <span>{theme === 'medical' ? '🏥 Chuẩn Y Tế' : theme === 'dark' ? '🌙 Giao diện Tối' : '☀️ Giao diện Sáng'}</span>
             </button>
           </div>
+          <OfflineIndicator />
 
           <div className={`max-w-md w-full rounded-3xl shadow-xl p-8 text-center border transition-all ${
             darkMode ? 'bg-slate-800 border-slate-700' : 
@@ -1264,7 +1267,8 @@ export default function App() {
             )}
           </nav>
 
-          <div className={`p-3 border-t shrink-0 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
+          <div className={`p-3 border-t shrink-0 space-y-2.5 ${darkMode ? 'border-slate-700' : 'border-slate-100'}`}>
+            <PWAInstallButton variant="sidebar" darkMode={darkMode} isMedical={isMedical} />
             <div className={`flex items-center gap-3 p-3 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-slate-50'}`}>
               <img 
                 src={user.photoURL || ''} 
@@ -1450,6 +1454,9 @@ export default function App() {
               >
                 <Search className="w-4 h-4" />
               </button>
+
+              {/* PWA Install App Button */}
+              <PWAInstallButton variant="header" darkMode={darkMode} isMedical={isMedical} />
 
               {/* Google Sheets Hub Shortcut (visible on xl+ screens) */}
               <button
@@ -1966,6 +1973,9 @@ export default function App() {
         currentUserId={user?.uid}
         currentUserName={usersList.find(u => u.email === user?.email)?.name || user?.displayName || user?.email || 'Cán bộ kho'}
       />
+
+      {/* Offline Status Indicator */}
+      <OfflineIndicator />
     </div>
     </ErrorBoundary>
   );

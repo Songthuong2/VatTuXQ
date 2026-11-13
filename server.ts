@@ -307,9 +307,37 @@ ${question}
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: process.env.DISABLE_HMR !== 'true' },
+      server: { middlewareMode: true, hmr: false, ws: false },
       appType: 'spa',
     });
+
+    // Skip HMR WebSocket handshake in @vite/client when HMR is disabled behind proxy
+    app.get('/@vite/client', async (_req, res, next) => {
+      try {
+        const result = await vite.transformRequest('/@vite/client');
+        if (result?.code) {
+          const patched = result.code
+            .replace(
+              'let isConnected = !invokeableTransport.connect;',
+              'let isConnected = true;'
+            )
+            .replace(
+              'await invokeableTransport.send(data);',
+              'return;'
+            )
+            .replace(
+              'transport.connect(createHMRHandler(handleMessage));',
+              '/* HMR disabled: skip WebSocket connection */'
+            );
+          res.type('application/javascript').send(patched);
+          return;
+        }
+      } catch {
+        // Fallback to standard Vite middleware
+      }
+      next();
+    });
+
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
