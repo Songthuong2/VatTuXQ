@@ -55,20 +55,20 @@ service cloud.firestore {
     function isValidItem(data) {
       return data.keys().hasAll(['name', 'categoryId', 'unit', 'minStock', 'currentStock'])
         && data.name is string && data.name.size() > 0 && data.name.size() <= 200
-        && data.categoryId is string && isValidId(data.categoryId)
+        && data.categoryId is string && (data.categoryId == '' || isValidId(data.categoryId))
         && data.unit is string && data.unit.size() > 0 && data.unit.size() <= 50
         && data.minStock is number && data.minStock >= 0
         && data.currentStock is number
-        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
-        && (!('barcode' in data) || (data.barcode is string && data.barcode.size() <= 100))
-        && (!('specification' in data) || (data.specification is string && data.specification.size() <= 200))
-        && (!('manufacturer' in data) || (data.manufacturer is string && data.manufacturer.size() <= 200))
-        && (!('departmentId' in data) || (data.departmentId is string && (data.departmentId == '' || isValidId(data.departmentId))))
-        && (!('expiryDate' in data) || (data.expiryDate is string && (data.expiryDate == '' || data.expiryDate.matches('^\\d{4}-\\d{2}-\\d{2}$'))))
-        && (!('price' in data) || (data.price is number && data.price >= 0))
-        && (!('note' in data) || (data.note is string && data.note.size() <= 500))
-        && (!('batches' in data) || (data.batches is list && data.batches.size() <= 100 && (data.batches.size() == 0 || data.batches[0] is map)))
-        && (!('createdAt' in data) || (data.createdAt == request.time || data.createdAt == null));
+        && (!('code' in data) || data.code == null || (data.code is string && data.code.size() <= 50))
+        && (!('barcode' in data) || data.barcode == null || (data.barcode is string && data.barcode.size() <= 100))
+        && (!('specification' in data) || data.specification == null || (data.specification is string && data.specification.size() <= 200))
+        && (!('manufacturer' in data) || data.manufacturer == null || (data.manufacturer is string && data.manufacturer.size() <= 200))
+        && (!('departmentId' in data) || data.departmentId == null || (data.departmentId is string && (data.departmentId == '' || isValidId(data.departmentId))))
+        && (!('expiryDate' in data) || data.expiryDate == null || (data.expiryDate is string && data.expiryDate.size() <= 30))
+        && (!('price' in data) || data.price == null || (data.price is number && data.price >= 0))
+        && (!('note' in data) || data.note == null || (data.note is string && data.note.size() <= 500))
+        && (!('batches' in data) || data.batches == null || (data.batches is list && data.batches.size() <= 100 && (data.batches.size() == 0 || data.batches[0] is map)))
+        && (!('createdAt' in data) || data.createdAt == null || data.createdAt is timestamp);
     }
 
     function isValidTransaction(data) {
@@ -94,11 +94,11 @@ service cloud.firestore {
         && data.name is string && data.name.size() > 0 && data.name.size() <= 100
         && data.email is string && data.email.size() > 0 && data.email.size() <= 150
         && data.role is string && data.role in ['Admin', 'ThuKho', 'KyThuatVien', 'BacSi', 'Xem']
-        && (!('code' in data) || (data.code is string && data.code.size() <= 50))
-        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 50))
-        && (!('departmentId' in data) || (data.departmentId is string && (data.departmentId == '' || isValidId(data.departmentId))))
-        && (!('status' in data) || (data.status is string && data.status.size() <= 50))
-        && (!('createdAt' in data) || (data.createdAt == request.time || data.createdAt == null));
+        && (!('code' in data) || data.code == null || (data.code is string && data.code.size() <= 50))
+        && (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 50))
+        && (!('departmentId' in data) || data.departmentId == null || (data.departmentId is string && (data.departmentId == '' || isValidId(data.departmentId))))
+        && (!('status' in data) || data.status == null || (data.status is string && data.status.size() <= 50))
+        && (!('createdAt' in data) || data.createdAt == null || data.createdAt is timestamp);
     }
 
     function isValidHoliday(data) {
@@ -130,14 +130,17 @@ service cloud.firestore {
     match /items/{itemId} {
       allow list: if isSignedIn();
       allow get: if isSignedIn();
-      allow create: if isSignedIn() && isValidItem(incoming()) && isValidId(itemId);
-      allow update: if isSignedIn() && isValidItem(incoming()) && (
-        // Action: Stock & batch update (currentStock, batches, expiryDate)
-        incoming().diff(existing()).affectedKeys().hasOnly(['currentStock', 'batches', 'expiryDate']) ||
-        // Action: Meta / barcode / batch details update (without modifying currentStock)
-        (incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'barcode', 'specification', 'manufacturer', 'categoryId', 'unit', 'minStock', 'price', 'expiryDate', 'departmentId', 'note', 'batches']) && !incoming().diff(existing()).affectedKeys().hasAny(['currentStock'])) ||
-        isAdmin()
-      );
+      allow create: if isSignedIn() && isValidItem(incoming()) && isValidId(itemId)
+        && (!('createdAt' in incoming()) || incoming().createdAt == request.time || incoming().createdAt == null);
+      allow update: if isSignedIn() && isValidItem(incoming())
+        && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        && (
+          // Action: Stock & batch update (currentStock, batches, expiryDate)
+          incoming().diff(existing()).affectedKeys().hasOnly(['currentStock', 'batches', 'expiryDate']) ||
+          // Action: Meta / barcode / batch details update (without modifying currentStock)
+          (incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'barcode', 'specification', 'manufacturer', 'categoryId', 'unit', 'minStock', 'price', 'expiryDate', 'departmentId', 'note', 'batches']) && !incoming().diff(existing()).affectedKeys().hasAny(['currentStock'])) ||
+          isAdmin()
+        );
       allow delete: if isAdmin();
     }
 
@@ -152,10 +155,13 @@ service cloud.firestore {
     match /users/{userId} {
       allow list: if isSignedIn();
       allow get: if isSignedIn();
-      allow create: if isSignedIn() && isValidUser(incoming()) && isValidId(userId);
-      allow update: if isSignedIn() && isValidUser(incoming()) && (
-        isAdmin() || (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'departmentId']))
-      );
+      allow create: if isSignedIn() && isValidUser(incoming()) && isValidId(userId)
+        && (!('createdAt' in incoming()) || incoming().createdAt == request.time || incoming().createdAt == null);
+      allow update: if isSignedIn() && isValidUser(incoming())
+        && (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt)
+        && (
+          isAdmin() || (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'departmentId']))
+        );
       allow delete: if isAdmin();
     }
 

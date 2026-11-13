@@ -18,7 +18,11 @@ import {
   ChevronRight,
   Loader2,
   Layers,
-  QrCode
+  QrCode,
+  ShieldCheck,
+  ShieldAlert,
+  SwitchCamera,
+  ExternalLink
 } from 'lucide-react';
 import { db } from './firebase';
 import { collection, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
@@ -58,7 +62,12 @@ export function BarcodeScannerModal({
   isMedical,
   currentUserName
 }: BarcodeScannerModalProps) {
-  // Scanner state
+  // Scanner & Permission state
+  type CameraPermissionState = 'checking' | 'prompt' | 'granted' | 'denied' | 'unsupported';
+  const [permissionState, setPermissionState] = useState<CameraPermissionState>('checking');
+  const [isRequestingPermission, setIsRequestingPermission] = useState(false);
+  const [availableCameras, setAvailableCameras] = useState<{ id: string; label: string }[]>([]);
+  const [selectedCameraIdx, setSelectedCameraIdx] = useState<number>(0);
   const [scannerActive, setScannerActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isTorchOn, setIsTorchOn] = useState(false);
@@ -155,8 +164,132 @@ export function BarcodeScannerModal({
     }
   };
 
+  // Check browser camera permission status without forcing an unprompted error
+  const checkCameraPermission = async () => {
+    setCameraError(null);
+    setPermissionState('checking');
+
+    if (typeof window === 'undefined' || !window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setPermissionState('unsupported');
+      setCameraError('Trình duyệt hoặc kết nối hiện tại chưa hỗ trợ truy cập Camera trực tiếp (yêu cầu HTTPS). Vui lòng dùng tính năng Chụp / Chọn ảnh hoặc Nhập mã.');
+      return;
+    }
+
+    try {
+      if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+        const status = await navigator.permissions.query({ name: 'camera' as PermissionName });
+        if (!isMountedRef.current) return;
+
+        status.onchange = () => {
+          if (!isMountedRef.current) return;
+          if (status.state === 'granted') {
+            setPermissionState('granted');
+            setCameraError(null);
+          } else if (status.state === 'denied') {
+            setPermissionState('denied');
+          } else {
+            setPermissionState('prompt');
+          }
+        };
+
+        if (status.state === 'granted') {
+          setPermissionState('granted');
+          await startCamera();
+          return;
+        }
+        if (status.state === 'denied') {
+          setPermissionState('denied');
+          setCameraError('Quyền truy cập Camera đang bị chặn trên trình duyệt.');
+          return;
+        }
+        setPermissionState('prompt');
+        return;
+      }
+    } catch {
+      // Permissions API for 'camera' may not be supported (e.g., iOS Safari / older Firefox)
+    }
+
+    // Fallback check via enumerateDevices labels
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      const alreadyGranted = videoDevices.some(d => Boolean(d.label && d.label.trim().length > 0));
+      if (alreadyGranted) {
+        setPermissionState('granted');
+        await startCamera();
+      } else {
+        setPermissionState('prompt');
+      }
+    } catch {
+      setPermissionState('prompt');
+    }
+  };
+
+  // Explicit user-triggered camera permission request
+  const requestCameraPermission = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setPermissionState('unsupported');
+      setCameraError('Trình duyệt không hỗ trợ API Camera. Vui lòng dùng nút Chụp / Chọn ảnh hoặc Nhập mã số tay.');
+      return;
+    }
+
+    setIsRequestingPermission(true);
+    setCameraError(null);
+
+    let probeStream: MediaStream | null = null;
+    try {
+      try {
+        probeStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false
+        });
+      } catch (innerErr: any) {
+        if (innerErr?.name === 'OverconstrainedError' || innerErr?.name === 'ConstraintNotSatisfiedError') {
+          probeStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+        } else {
+          throw innerErr;
+        }
+      }
+
+      // Immediately release probe stream so Html5Qrcode can acquire the camera cleanly
+      if (probeStream) {
+        probeStream.getTracks().forEach(track => track.stop());
+      }
+
+      if (!isMountedRef.current) return;
+      setPermissionState('granted');
+      toast.success('Đã cấp quyền truy cập Camera!');
+      await startCamera();
+    } catch (err: any) {
+      if (probeStream) {
+        probeStream.getTracks().forEach(track => track.stop());
+      }
+      if (!isMountedRef.current) return;
+
+      const errName = err?.name || '';
+      if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || errName === 'SecurityError') {
+        setPermissionState('denied');
+        setCameraError('Quyền truy cập Camera đã bị từ chối hoặc bị chặn bởi trình duyệt.');
+        toast.error('Chưa được cấp quyền Camera. Vui lòng cho phép trong trình duyệt.');
+      } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+        setCameraError('Không tìm thấy camera nào trên thiết bị này.');
+      } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
+        setCameraError('Camera đang được sử dụng bởi ứng dụng khác. Hãy đóng ứng dụng khác rồi thử lại.');
+      } else {
+        setCameraError(err?.message || 'Không thể mở camera. Vui lòng thử lại hoặc dùng tính năng Chụp / Chọn ảnh.');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setIsRequestingPermission(false);
+      }
+    }
+  };
+
   // Start camera scanner
-  const startCamera = async () => {
+  const startCamera = async (cameraIdOverride?: string) => {
     setCameraError(null);
     scanLockedRef.current = false;
     try {
@@ -196,25 +329,56 @@ export function BarcodeScannerModal({
         formatsToSupport
       };
 
-      await html5QrCode.start(
-        { facingMode: 'environment' },
-        config,
-        (decodedText) => {
-          if (!scanLockedRef.current) {
-            scanLockedRef.current = true;
-            handleBarcodeDetected(decodedText);
+      // Discover available cameras for accurate rear selection & switching
+      let detectedCameras: { id: string; label: string }[] = [];
+      try {
+        const cams = await Html5Qrcode.getCameras();
+        if (cams && cams.length > 0) {
+          detectedCameras = cams.map(c => ({ id: c.id, label: c.label || `Camera` }));
+          if (isMountedRef.current) {
+            setAvailableCameras(detectedCameras);
           }
-        },
-        () => {
-          // Frame missed, ignore
         }
-      );
+      } catch {
+        // Ignore enumeration error; proceed with facingMode
+      }
+
+      let cameraTarget: string | { facingMode: string } = { facingMode: 'environment' };
+      if (cameraIdOverride) {
+        cameraTarget = cameraIdOverride;
+      } else if (detectedCameras.length > 0) {
+        const rearIdx = detectedCameras.findIndex(c =>
+          /back|rear|environment|sau/i.test(c.label)
+        );
+        const chosenIdx = rearIdx >= 0 ? rearIdx : 0;
+        if (isMountedRef.current) setSelectedCameraIdx(chosenIdx);
+        cameraTarget = detectedCameras[chosenIdx].id;
+      }
+
+      const onDecoded = (decodedText: string) => {
+        if (!scanLockedRef.current) {
+          scanLockedRef.current = true;
+          handleBarcodeDetected(decodedText);
+        }
+      };
+
+      try {
+        await html5QrCode.start(cameraTarget, config, onDecoded, () => {});
+      } catch (startErr: any) {
+        // Fallback to any user/default camera if environment camera is unavailable
+        if (!cameraIdOverride && typeof cameraTarget !== 'string') {
+          await html5QrCode.start({ facingMode: 'user' }, config, onDecoded, () => {});
+        } else {
+          throw startErr;
+        }
+      }
 
       if (!isMountedRef.current) {
         await stopCamera();
         return;
       }
 
+      setPermissionState('granted');
       setScannerActive(true);
 
       // Check if torch is available
@@ -229,13 +393,27 @@ export function BarcodeScannerModal({
     } catch (err: any) {
       console.warn('Failed to start camera scanner:', err);
       if (isMountedRef.current) {
-        setCameraError(
-          err?.message ||
-          'Không thể mở camera. Vui lòng cấp quyền truy cập máy ảnh trong trình duyệt hoặc sử dụng tính năng tải ảnh / nhập mã.'
-        );
+        const errStr = String(err?.name || err?.message || err || '');
+        if (/NotAllowed|Permission|denied|SecurityError/i.test(errStr)) {
+          setPermissionState('denied');
+          setCameraError('Quyền truy cập Camera đã bị từ chối hoặc chưa được cấp.');
+        } else {
+          setCameraError(
+            err?.message ||
+            'Không thể mở camera. Vui lòng cấp quyền truy cập máy ảnh trong trình duyệt hoặc sử dụng tính năng tải ảnh / nhập mã.'
+          );
+        }
         setScannerActive(false);
       }
     }
+  };
+
+  // Switch between front/back cameras when multiple cameras exist
+  const handleSwitchCamera = async () => {
+    if (availableCameras.length < 2) return;
+    const nextIdx = (selectedCameraIdx + 1) % availableCameras.length;
+    setSelectedCameraIdx(nextIdx);
+    await startCamera(availableCameras[nextIdx].id);
   };
 
   // Toggle flashlight
@@ -270,7 +448,9 @@ export function BarcodeScannerModal({
       handleBarcodeDetected(decodedText);
     } catch {
       toast.error('Không tìm thấy mã vạch trong ảnh đã chọn. Vui lòng chụp rõ nét hơn.');
-      startCamera();
+      if (permissionState === 'granted') {
+        startCamera();
+      }
     } finally {
       setIsProcessing(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -343,7 +523,7 @@ export function BarcodeScannerModal({
       setShowManualInput(false);
       setManualCodeInput('');
       setCameraError(null);
-      startCamera();
+      checkCameraPermission();
     } else {
       stopCamera();
     }
@@ -361,7 +541,7 @@ export function BarcodeScannerModal({
     setSelectedItem(null);
     setItemToLink(null);
     setManualCodeInput('');
-    startCamera();
+    checkCameraPermission();
   };
 
   // 1. Submit Link Barcode to Existing Item
@@ -370,10 +550,10 @@ export function BarcodeScannerModal({
     setIsProcessing(true);
     try {
       const updatePayload: Record<string, string> = {
-        barcode: scannedCode
+        barcode: scannedCode.slice(0, 100)
       };
       if (!itemToLink.code) {
-        updatePayload.code = scannedCode;
+        updatePayload.code = scannedCode.slice(0, 50);
       }
       await updateDoc(doc(db, 'items', itemToLink.id), updatePayload);
 
@@ -703,6 +883,19 @@ export function BarcodeScannerModal({
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {scannerActive && availableCameras.length > 1 && (
+              <button
+                type="button"
+                onClick={handleSwitchCamera}
+                className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                  darkMode ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                }`}
+                title="Đổi camera (Trước / Sau)"
+              >
+                <SwitchCamera className="w-4 h-4" />
+              </button>
+            )}
+
             {scannerActive && hasTorch && (
               <button
                 type="button"
@@ -737,8 +930,46 @@ export function BarcodeScannerModal({
           {/* 1. SCANNING STATE */}
           {workflowState === 'scanning' && (
             <div className="flex flex-col items-center">
+              {/* Camera Permission Status Strip */}
+              <div className={`w-full mb-3 px-3 py-2 rounded-xl border flex items-center justify-between gap-2 text-xs ${
+                permissionState === 'granted'
+                  ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-700 dark:text-emerald-300'
+                  : permissionState === 'denied' || permissionState === 'unsupported'
+                  ? 'bg-rose-500/10 border-rose-500/25 text-rose-700 dark:text-rose-300'
+                  : 'bg-blue-500/10 border-blue-500/25 text-blue-700 dark:text-blue-300'
+              }`}>
+                <div className="flex items-center gap-2 min-w-0">
+                  {permissionState === 'granted' ? (
+                    <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
+                  ) : permissionState === 'denied' || permissionState === 'unsupported' ? (
+                    <ShieldAlert className="w-4 h-4 text-rose-500 shrink-0" />
+                  ) : (
+                    <Camera className="w-4 h-4 text-blue-500 shrink-0" />
+                  )}
+                  <span className="font-bold truncate">
+                    {permissionState === 'checking' && 'Đang kiểm tra quyền Camera...'}
+                    {permissionState === 'prompt' && 'Chưa cấp quyền Camera cho ứng dụng'}
+                    {permissionState === 'granted' && 'Đã cấp quyền truy cập Camera'}
+                    {permissionState === 'denied' && 'Quyền Camera đang bị trình duyệt chặn'}
+                    {permissionState === 'unsupported' && 'Thiết bị/Kết nối không hỗ trợ Camera trực tiếp'}
+                  </span>
+                </div>
+
+                {permissionState !== 'granted' && permissionState !== 'unsupported' && (
+                  <button
+                    type="button"
+                    onClick={requestCameraPermission}
+                    disabled={isRequestingPermission}
+                    className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold shrink-0 cursor-pointer flex items-center gap-1"
+                  >
+                    {isRequestingPermission && <Loader2 className="w-3 h-3 animate-spin" />}
+                    <span>Cấp quyền</span>
+                  </button>
+                )}
+              </div>
+
               {/* Camera Frame Container */}
-              <div className="w-full relative rounded-2xl overflow-hidden bg-black aspect-square max-h-[290px] sm:max-h-[340px] flex items-center justify-center border-2 border-dashed border-blue-500/40 shadow-inner">
+              <div className="w-full relative rounded-2xl overflow-hidden bg-slate-950 aspect-square max-h-[300px] sm:max-h-[340px] flex items-center justify-center border-2 border-dashed border-blue-500/40 shadow-inner">
                 {/* HTML5 QR Container Target */}
                 <div
                   id={scannerContainerId}
@@ -758,21 +989,79 @@ export function BarcodeScannerModal({
                   </div>
                 )}
 
-                {/* Error Fallback */}
-                {cameraError && (
-                  <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center p-6 text-center text-white">
-                    <AlertCircle className="w-10 h-10 text-rose-500 mb-2" />
-                    <p className="text-xs font-semibold mb-3 leading-relaxed text-slate-200">
-                      {cameraError}
+                {/* Permission Request Prompt Overlay (when state === 'prompt' or 'checking') */}
+                {!scannerActive && !cameraError && (permissionState === 'prompt' || permissionState === 'checking') && (
+                  <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center p-5 text-center text-white">
+                    <div className="w-14 h-14 rounded-2xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center mb-3">
+                      <Camera className="w-7 h-7 text-blue-400" />
+                    </div>
+                    <h4 className="text-sm font-black mb-1.5">
+                      Yêu cầu quyền truy cập Camera
+                    </h4>
+                    <p className="text-xs text-slate-300 leading-relaxed mb-4 max-w-[270px]">
+                      Cho phép trình duyệt mở máy ảnh để quét trực tiếp mã vạch / mã QR trên vỏ hộp vật tư y tế.
                     </p>
                     <button
                       type="button"
-                      onClick={startCamera}
-                      className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white shadow-md flex items-center gap-1.5 cursor-pointer"
+                      onClick={requestCameraPermission}
+                      disabled={isRequestingPermission || permissionState === 'checking'}
+                      className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-xs font-bold text-white shadow-lg shadow-blue-600/30 flex items-center gap-2 cursor-pointer active:scale-95 transition-all"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Thử mở lại Camera</span>
+                      {isRequestingPermission ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="w-4 h-4" />
+                      )}
+                      <span>{isRequestingPermission ? 'Đang xin quyền...' : 'Cấp quyền & Bật Camera'}</span>
                     </button>
+                  </div>
+                )}
+
+                {/* Error / Permission Denied Fallback */}
+                {(cameraError || permissionState === 'denied' || permissionState === 'unsupported') && !scannerActive && (
+                  <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center p-5 text-center text-white overflow-y-auto">
+                    <ShieldAlert className="w-9 h-9 text-rose-500 mb-2 shrink-0" />
+                    <p className="text-xs font-bold mb-1.5 text-white">
+                      {permissionState === 'denied' ? 'Chưa có quyền truy cập Camera' : 'Không thể khởi động Camera'}
+                    </p>
+                    <p className="text-[11px] font-medium mb-3 leading-relaxed text-slate-300 max-w-[290px]">
+                      {cameraError || 'Vui lòng cấp quyền Máy ảnh (Camera) trong cài đặt trình duyệt.'}
+                    </p>
+
+                    {permissionState === 'denied' && (
+                      <div className="text-left text-[11px] text-slate-300 bg-slate-800/90 border border-slate-700 rounded-xl p-2.5 mb-3 w-full max-w-[300px] space-y-1">
+                        <p className="font-bold text-amber-300">Cách bật lại nhanh:</p>
+                        <p>1. Nhấn biểu tượng <b>Khóa / Máy ảnh</b> trên thanh địa chỉ trình duyệt.</p>
+                        <p>2. Chuyển mục <b>Máy ảnh (Camera)</b> sang <b>Cho phép (Allow)</b>.</p>
+                        <p>3. Nhấn <b>Yêu cầu lại quyền Camera</b> bên dưới.</p>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      {permissionState !== 'unsupported' && (
+                        <button
+                          type="button"
+                          onClick={requestCameraPermission}
+                          disabled={isRequestingPermission}
+                          className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white shadow-md flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {isRequestingPermission ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                          <span>Yêu cầu lại quyền Camera</span>
+                        </button>
+                      )}
+
+                      {typeof window !== 'undefined' && window.self !== window.top && (
+                        <a
+                          href={window.location.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold text-slate-200 flex items-center gap-1.5"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Mở tab riêng</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
