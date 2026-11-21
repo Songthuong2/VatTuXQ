@@ -775,13 +775,14 @@ export default function App() {
         const wasRedirectPending = sessionStorage.getItem('g_auth_redirect_pending') === '1';
         if (result?.user) {
           sessionStorage.removeItem('g_auth_redirect_pending');
+          setUser(result.user);
           setLoginErrorType(null);
           setLoginErrorMessage('');
         } else if (wasRedirectPending && !auth.currentUser) {
           sessionStorage.removeItem('g_auth_redirect_pending');
           setLoginErrorType('popup-blocked');
           setLoginErrorMessage(
-            'Trình duyệt đang chặn cửa sổ bật lên (popup) hoặc chặn cookie chuyển hướng. Vui lòng bật cho phép cửa sổ bật lên cho trang web này rồi thử lại.'
+            'Trình duyệt đã chuyển hướng về nhưng chặn lưu phiên đăng nhập (do chặn cookie bên thứ ba). Vui lòng dùng nút "Đăng nhập với Google" (cho phép Popup) hoặc tắt chế độ chặn cookie bên thứ ba.'
           );
         }
       })
@@ -891,48 +892,37 @@ export default function App() {
     provider.setCustomParameters({ prompt: 'select_account' });
 
     try {
-      await signInWithPopup(auth, provider);
+      const cred = await signInWithPopup(auth, provider);
+      if (cred?.user) {
+        setUser(cred.user);
+      }
       setIsLoggingIn(false);
     } catch (error: any) {
       console.error("Login Error:", error);
       const code = error?.code || '';
+      setIsLoggingIn(false);
 
       if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
-        const alreadyTriedRedirect = sessionStorage.getItem('g_auth_redirect_pending') === '1';
-
-        // Outside an iframe (standalone tab / mobile browser / PWA), automatically fall back to redirect sign-in
-        if (!isInIframe && !alreadyTriedRedirect) {
-          try {
-            sessionStorage.setItem('g_auth_redirect_pending', '1');
-            toast.info('Trình duyệt chặn popup, đang tự động chuyển sang trang đăng nhập Google...');
-            await signInWithRedirect(auth, provider);
-            return;
-          } catch (redirectErr) {
-            sessionStorage.removeItem('g_auth_redirect_pending');
-            console.warn('Auto redirect fallback failed:', redirectErr);
-          }
-        }
-
-        setIsLoggingIn(false);
         setLoginErrorType('popup-blocked');
         setLoginErrorMessage(
           isInIframe
-            ? 'Trình duyệt đang chặn cửa sổ bật lên (popup) bên trong khung xem trước.'
+            ? 'Trình duyệt đang chặn cửa sổ bật lên (popup) hoặc cookie bên thứ ba trong khung xem trước.'
             : 'Trình duyệt đã chặn cửa sổ bật lên (popup) đăng nhập Google.'
         );
         toast.error("Trình duyệt đã chặn cửa sổ đăng nhập. Vui lòng xem hướng dẫn bên dưới nút đăng nhập.", {
           duration: 6000,
         });
       } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setIsLoggingIn(false);
-        toast.info("Cửa sổ đăng nhập Google đã đóng. Vui lòng nhấn Đăng nhập lại để tiếp tục.");
+        setLoginErrorType('popup-blocked');
+        setLoginErrorMessage(
+          'Cửa sổ đăng nhập đã đóng trước khi hoàn tất xác thực. Nếu bạn vừa xác nhận tài khoản Google nhưng bị quay lại đây, hãy cho phép Popup & Cookie bên thứ ba hoặc mở ứng dụng ở tab trình duyệt mới.'
+        );
+        toast.info("Cửa sổ đăng nhập đã đóng. Vui lòng thử lại hoặc mở ở tab mới.");
       } else if (code === 'auth/unauthorized-domain') {
-        setIsLoggingIn(false);
         setLoginErrorType('unauthorized-domain');
         setLoginErrorMessage(`Tên miền "${window.location.hostname}" chưa được thêm vào Authorized domains trong Firebase Console.`);
         toast.error(`Tên miền ${window.location.hostname} chưa được cấp quyền đăng nhập.`);
       } else {
-        setIsLoggingIn(false);
         setLoginErrorType('generic');
         setLoginErrorMessage(error?.message || "Đã có lỗi xảy ra khi đăng nhập.");
         toast.error("Lỗi đăng nhập: " + (error?.message || "Đã có lỗi xảy ra."));
@@ -1169,13 +1159,13 @@ export default function App() {
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-bold text-sm mb-1">Cửa sổ đăng nhập đang bị trình duyệt chặn</p>
+                    <p className="font-bold text-sm mb-1">Không thể hoàn tất cửa sổ đăng nhập</p>
                     <p className="opacity-90 leading-relaxed">{loginErrorMessage}</p>
                   </div>
                 </div>
 
                 <ol className="list-decimal list-inside space-y-1 opacity-90 pl-1">
-                  <li>Nhấn biểu tượng <strong>cửa sổ bị chặn</strong> ở góc phải thanh địa chỉ trình duyệt.</li>
+                  <li>Nhấn biểu tượng <strong>cửa sổ bị chặn</strong> (hoặc biểu tượng con mắt chặn cookie) ở góc phải thanh địa chỉ trình duyệt.</li>
                   <li>Chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong> cho trang này rồi nhấn <strong>Đăng nhập với Google</strong> lại.</li>
                 </ol>
 
@@ -1197,7 +1187,7 @@ export default function App() {
                     className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-4 h-4 shrink-0" />
-                    <span>Đăng nhập chuyển hướng (Không cần Popup)</span>
+                    <span>Thử đăng nhập chuyển hướng (Không cần Popup)</span>
                   </button>
                 )}
               </div>
