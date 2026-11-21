@@ -1,4 +1,4 @@
-// Intelligent Diagnostic Imaging Inventory Expert Engine (Clinical & Fail-safe)
+// Intelligent Diagnostic Imaging Inventory Expert Engine (Clinical & Quantitative)
 export interface AnalysisResult {
   summary: string;
   alerts: { type: 'danger' | 'warning' | 'info'; message: string; item?: string }[];
@@ -39,11 +39,56 @@ export interface ItemStockAnalysis {
   validBatches: ItemBatchAnalysis[];
 }
 
+export interface ConsumptionWindowMetrics {
+  label: string;
+  totalOut: number;
+  workingDays: number;
+  dailyUsage: number;
+  workingDaysRemaining: number | null;
+  depletionDateStr: string;
+}
+
+export interface ItemConsumptionAnalysis {
+  window30d: ConsumptionWindowMetrics;
+  window90d: ConsumptionWindowMetrics;
+  windowYTD: ConsumptionWindowMetrics;
+  window365d: ConsumptionWindowMetrics;
+  allTimeOut: number;
+  primarySourceLabel: string;
+  primaryDailyUsage: number;
+  primaryWorkingDaysRemaining: number | null;
+  primaryDepletionDateStr: string;
+  recentOutCount: number;
+  lastOutDateStr: string | null;
+}
+
+export function getLocalDateStr(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function formatDateVi(date: Date): string {
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const y = date.getFullYear();
+  return `${d}/${m}/${y}`;
+}
+
 export function parseDateFlexible(val: any): Date | null {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
   if (typeof val === 'object' && typeof val.seconds === 'number') {
     return new Date(val.seconds * 1000);
+  }
+  if (typeof val === 'object' && typeof val.toDate === 'function') {
+    try {
+      const d = val.toDate();
+      return d instanceof Date && !isNaN(d.getTime()) ? d : null;
+    } catch {
+      return null;
+    }
   }
   if (typeof val !== 'string') return null;
   const s = val.trim();
@@ -73,6 +118,11 @@ export function parseDateFlexible(val: any): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+export function parseTransactionDate(t: any): Date | null {
+  if (!t) return null;
+  return parseDateFlexible(t.timestamp) || parseDateFlexible(t.date);
+}
+
 export function removeVietnameseTones(str: string): string {
   if (!str) return '';
   return str
@@ -92,6 +142,81 @@ export function getItemCategoryName(item: any, categories: any[] = []): string {
     if (found?.name) return found.name;
   }
   return item.categoryId ? String(item.categoryId) : 'Khác';
+}
+
+export function buildHolidaySet(holidays: any[] = []): Set<string> {
+  const set = new Set<string>();
+  for (const h of holidays) {
+    if (h?.date && typeof h.date === 'string') {
+      const normalized = h.date.trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+        set.add(normalized);
+      } else {
+        const parsed = parseDateFlexible(h.date);
+        if (parsed) set.add(getLocalDateStr(parsed));
+      }
+    }
+  }
+  return set;
+}
+
+export function countWorkingDays(startDate: Date, endDate: Date, holidaySet: Set<string>): number {
+  const cur = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  if (cur > end) return 0;
+
+  let count = 0;
+  while (cur <= end) {
+    if (!holidaySet.has(getLocalDateStr(cur))) {
+      count++;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+export function estimateDepletionFromStock(
+  stockQty: number,
+  dailyUsage: number,
+  startDate: Date,
+  holidaySet: Set<string>
+): { workingDaysRemaining: number | null; depletionDateStr: string } {
+  if (stockQty <= 0) {
+    return {
+      workingDaysRemaining: 0,
+      depletionDateStr: `Đã hết (${formatDateVi(startDate)})`,
+    };
+  }
+  if (dailyUsage <= 0) {
+    return {
+      workingDaysRemaining: null,
+      depletionDateStr: 'Chưa có dữ liệu tiêu hao (N/A)',
+    };
+  }
+
+  let stockLeft = stockQty;
+  const checkDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const maxDate = new Date(checkDate.getTime() + 730 * 24 * 60 * 60 * 1000);
+  let workingDays = 0;
+
+  while (stockLeft > 0 && checkDate < maxDate) {
+    checkDate.setDate(checkDate.getDate() + 1);
+    if (!holidaySet.has(getLocalDateStr(checkDate))) {
+      stockLeft -= dailyUsage;
+      workingDays++;
+    }
+  }
+
+  if (stockLeft <= 0) {
+    return {
+      workingDaysRemaining: workingDays,
+      depletionDateStr: formatDateVi(checkDate),
+    };
+  }
+  return {
+    workingDaysRemaining: Math.round(stockQty / dailyUsage),
+    depletionDateStr: '> 2 năm',
+  };
 }
 
 export function computeItemStockAndExpiry(
@@ -114,7 +239,7 @@ export function computeItemStockAndExpiry(
 
   let expiredQty = 0;
   let nearingQty = 0;
-  let earliestExpiryDateStr = item.expiryDate || '';
+  const earliestExpiryDateStr = item.expiryDate || '';
 
   if (batches.length > 0) {
     batches.forEach((b: any) => {
@@ -211,15 +336,12 @@ export function computeItemStockAndExpiry(
   }
 
   // TỒN KHO KHẢ DỤNG: Trong y tế, các lô hết hạn KHÔNG ĐƯỢC PHÉP SỬ DỤNG CHO BỆNH NHÂN
-  // Usable Stock = Total Stock - Expired Stock
   const usableStock = Math.max(0, Number((totalStock - expiredQty).toFixed(2)));
   const hasExpired = expiredQty > 0 || expiredBatches.length > 0;
   const hasNearing = nearingQty > 0 || nearingBatches.length > 0;
   const isFullyExpired = hasExpired && usableStock === 0 && totalStock > 0;
   const isDeficit = usableStock <= minStock || hasExpired;
 
-  // Số lượng đề xuất mua sắm bổ sung:
-  // Đảm bảo bù đủ lượng hàng đã hết hạn + đưa tồn khả dụng lên mức 2 x định mức an toàn (hoặc tối thiểu 10)
   let suggestedReorder = 0;
   if (isDeficit) {
     const targetBuffer = Math.max(minStock * 2, minStock + 10, 10);
@@ -249,6 +371,325 @@ export function computeItemStockAndExpiry(
   };
 }
 
+export function computeItemConsumptionAndDepletion(
+  analysis: ItemStockAnalysis,
+  transactions: any[] = [],
+  holidays: any[] = [],
+  now: Date = new Date()
+): ItemConsumptionAnalysis {
+  const holidaySet = buildHolidaySet(holidays);
+  const itemId = analysis.item?.id;
+  const itemNameClean = removeVietnameseTones(analysis.name);
+
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+
+  const start30d = new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const start90d = new Date(todayStart.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const startYTD = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
+  const start365d = new Date(todayStart.getTime() - 365 * 24 * 60 * 60 * 1000);
+
+  const wd30 = Math.max(1, countWorkingDays(start30d, todayStart, holidaySet));
+  const wd90 = Math.max(1, countWorkingDays(start90d, todayStart, holidaySet));
+  const wdYTD = Math.max(1, countWorkingDays(startYTD, todayStart, holidaySet));
+  const wd365 = Math.max(1, countWorkingDays(start365d, todayStart, holidaySet));
+
+  let out30 = 0;
+  let out90 = 0;
+  let outYTD = 0;
+  let out365 = 0;
+  let allTimeOut = 0;
+  let recentOutCount = 0;
+  let latestTxDate: Date | null = null;
+
+  for (const t of transactions) {
+    if (t?.type !== 'OUT') continue;
+    const matchById = itemId && t.itemId && t.itemId === itemId;
+    const matchByName = !t.itemId && t.itemName && removeVietnameseTones(t.itemName) === itemNameClean;
+    if (!matchById && !matchByName) continue;
+
+    const qty = Number(t.quantity || 0);
+    if (qty <= 0) continue;
+
+    allTimeOut += qty;
+    recentOutCount++;
+
+    const txDate = parseTransactionDate(t);
+    if (!txDate) continue;
+    if (!latestTxDate || txDate > latestTxDate) {
+      latestTxDate = txDate;
+    }
+
+    if (txDate <= todayEnd) {
+      if (txDate >= start30d) out30 += qty;
+      if (txDate >= start90d) out90 += qty;
+      if (txDate >= startYTD) outYTD += qty;
+      if (txDate >= start365d) out365 += qty;
+    }
+  }
+
+  const buildWindow = (label: string, totalOut: number, workingDays: number): ConsumptionWindowMetrics => {
+    const dailyUsage = workingDays > 0 ? Number((totalOut / workingDays).toFixed(2)) : 0;
+    const dep = estimateDepletionFromStock(analysis.usableStock, dailyUsage, todayStart, holidaySet);
+    return {
+      label,
+      totalOut: Number(totalOut.toFixed(2)),
+      workingDays,
+      dailyUsage,
+      workingDaysRemaining: dep.workingDaysRemaining,
+      depletionDateStr: dep.depletionDateStr,
+    };
+  };
+
+  const window30d = buildWindow('30 ngày gần nhất', out30, wd30);
+  const window90d = buildWindow('90 ngày gần nhất', out90, wd90);
+  const windowYTD = buildWindow(`Từ đầu năm ${now.getFullYear()} (YTD)`, outYTD, wdYTD);
+  const window365d = buildWindow('1 năm gần nhất (365 ngày)', out365, wd365);
+
+  // Pick best primary window: 90d if active, otherwise YTD, then 365d, then 30d
+  let primary = window90d;
+  if (window90d.dailyUsage <= 0) {
+    if (windowYTD.dailyUsage > 0) primary = windowYTD;
+    else if (window365d.dailyUsage > 0) primary = window365d;
+    else if (window30d.dailyUsage > 0) primary = window30d;
+  }
+
+  return {
+    window30d,
+    window90d,
+    windowYTD,
+    window365d,
+    allTimeOut: Number(allTimeOut.toFixed(2)),
+    primarySourceLabel: primary.label,
+    primaryDailyUsage: primary.dailyUsage,
+    primaryWorkingDaysRemaining: primary.workingDaysRemaining,
+    primaryDepletionDateStr: primary.depletionDateStr,
+    recentOutCount,
+    lastOutDateStr: latestTxDate ? formatDateVi(latestTxDate) : null,
+  };
+}
+
+// Vietnamese stop-words to ignore when matching specific item names
+const QUERY_STOP_WORDS = new Set([
+  'uoc', 'tinh', 'giup', 'toi', 'minh', 'ban', 'cho', 'xem', 'hoi', 'biet',
+  'ngay', 'het', 'han', 'hang', 'ton', 'kho', 'bao', 'nhieu', 'lau', 'con',
+  'may', 'duoc', 'khong', 'khi', 'nao', 'the', 'sao', 'can', 'nhap', 'them',
+  'bo', 'sung', 'mua', 'sam', 'du', 'tru', 'kiem', 'tra', 'tim', 'thong',
+  'tin', 'chi', 'tiet', 've', 'cua', 'loai', 'vat', 'tu', 'nay', 'kia',
+  'hien', 'tai', 'dang', 'co', 'la', 'gi', 'cac', 'nhung', 'voi', 'trong',
+  'den', 'su', 'dung', 'muc', 'toi', 'thieu', 'don', 'gia', 'lo',
+  'tieu', 'hao', 'xuat', 'moi', 'trung', 'binh', 'kien', 'chinh', 'xac',
+  'mot', 'hai', 'ba', 'hay', 'va', 'hoac', 'nha', 'nhe', 'a', 'oi',
+  // Analytics, time horizon, comparison & department stop-words
+  'tong', 'tri', 'tien', 'ngan', 'sach', 'thanh', 'lich', 'gan', 'day', 'vua',
+  'qua', 'truoc', 'sau', 'tuan', 'thang', 'quy', 'nam', 'toi', 'so', 'sanh',
+  'giua', 'khac', 'nhau', 'hon', 'it', 'nhat', 'phan', 'tram', 'phong', 'ban',
+  'khu', 'vuc', 'clvt', 'ct', 'cht', 'mri', 'sieu', 'am', 'dsa', 'noi', 'soi',
+  'muc', 'do', 'bao', 'cao', 'danh', 'sach', 'tat', 'ca', 'toan', 'bo'
+]);
+
+function tokenizeForItemMatch(text: string): string[] {
+  const clean = removeVietnameseTones(text)
+    .replace(/(\d+)\s*[x×*]\s*(\d+)/gi, '$1x$2') // normalize "8 x 10" -> "8x10"
+    .replace(/x[\s-]+quang/g, 'xquang') // normalize "x quang" / "x-quang" -> "xquang"
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  if (!clean) return [];
+  return clean.split(/\s+/).filter(Boolean);
+}
+
+function expandDimensionAliases(tokens: string[]): string[] {
+  const expanded = new Set<string>(tokens);
+  for (const tok of tokens) {
+    const dim = tok.match(/^(\d+)x(\d+)$/);
+    if (dim) {
+      expanded.add(`${dim[2]}x${dim[1]}`); // 8x10 <-> 10x8
+    }
+    if (tok === 'xq') expanded.add('xquang');
+    if (tok === 'clvt') expanded.add('ct');
+    if (tok === 'cht') expanded.add('mri');
+  }
+  return Array.from(expanded);
+}
+
+export interface ScoredItemMatch {
+  analysis: ItemStockAnalysis;
+  score: number;
+  matchedTokens: string[];
+}
+
+export function findMatchingItems(
+  question: string,
+  analyzedItems: ItemStockAnalysis[]
+): ScoredItemMatch[] {
+  const rawCleanQ = removeVietnameseTones(question)
+    .replace(/(\d+)\s*[x×*]\s*(\d+)/gi, '$1x$2')
+    .replace(/x[\s-]+quang/g, 'xquang')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  const queryTokensAll = tokenizeForItemMatch(question);
+  const queryKeywords = expandDimensionAliases(
+    queryTokensAll.filter(t => !QUERY_STOP_WORDS.has(t) && t.length >= 2)
+  );
+
+  if (queryKeywords.length === 0) return [];
+
+  const matches: ScoredItemMatch[] = [];
+
+  for (const analysis of analyzedItems) {
+    const itemTokens = tokenizeForItemMatch(analysis.name);
+    const itemClean = itemTokens.join(' ');
+    const itemTokenSet = new Set(itemTokens);
+
+    let score = 0;
+    const matchedTokens: string[] = [];
+
+    // 1. Exact full item name present inside query
+    if (itemClean.length >= 4 && rawCleanQ.includes(itemClean)) {
+      score += 120;
+    }
+
+    // 2. Exact whole-token matching (prevents "tinh" matching inside "uoc tinh" or partial substrings)
+    for (const qTok of queryKeywords) {
+      if (itemTokenSet.has(qTok)) {
+        const isDimensionOrCode = /\d/.test(qTok) || qTok === 'xquang' || qTok === 'barit' || qTok === 'omnipaque';
+        // Check whether exact match vs swapped dimension (e.g. 8x10 matched 10x8)
+        const isExactLiteral = queryTokensAll.includes(qTok);
+        score += isDimensionOrCode ? (isExactLiteral ? 35 : 28) : 16;
+        matchedTokens.push(qTok);
+      } else if (qTok.length >= 4) {
+        // Only allow compound prefix/contains if token is genuinely long (>= 4 chars) and starts/matches whole word
+        const partialHit = itemTokens.some(it => it.length >= 4 && (it.startsWith(qTok) || qTok.startsWith(it)));
+        if (partialHit) {
+          score += 8;
+          matchedTokens.push(qTok);
+        }
+      }
+    }
+
+    // 3. Bigram bonus for consecutive phrase match
+    for (let i = 0; i < queryTokensAll.length - 1; i++) {
+      const t1 = queryTokensAll[i];
+      const t2 = queryTokensAll[i + 1];
+      if (QUERY_STOP_WORDS.has(t1) && QUERY_STOP_WORDS.has(t2)) continue;
+      const bigram = `${t1} ${t2}`;
+      if (itemClean.includes(bigram)) {
+        score += 20;
+      }
+    }
+
+    // 4. Coverage bonus (higher ratio of query keywords matched)
+    const uniqueNonDimMatched = matchedTokens.length;
+    if (uniqueNonDimMatched >= 2) {
+      score += uniqueNonDimMatched * 6;
+    }
+
+    // Require strong confidence: either >= 20 points or >= 2 matched meaningful tokens
+    if (score >= 20 || (score >= 16 && matchedTokens.length >= 1 && queryKeywords.length <= 2)) {
+      matches.push({ analysis, score, matchedTokens });
+    }
+  }
+
+  return matches.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return b.matchedTokens.length - a.matchedTokens.length;
+  });
+}
+
+export function buildInventoryAnalyticsContext(
+  items: any[] = [],
+  transactions: any[] = [],
+  holidays: any[] = [],
+  categories: any[] = []
+) {
+  const now = new Date();
+  const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+  const holidaySet = buildHolidaySet(holidays);
+
+  const enrichedItems = items.map(i => {
+    const stock = computeItemStockAndExpiry(i, now, sixtyDaysLater, categories);
+    const consumption = computeItemConsumptionAndDepletion(stock, transactions, holidays, now);
+    return {
+      id: i.id,
+      name: stock.name,
+      category: stock.categoryName,
+      unit: stock.unit,
+      price: stock.price,
+      totalStock: stock.totalStock,
+      usableStock: stock.usableStock,
+      expiredQty: stock.expiredQty,
+      nearingQty: stock.nearingQty,
+      minStock: stock.minStock,
+      hasExpired: stock.hasExpired,
+      isFullyExpired: stock.isFullyExpired,
+      suggestedPurchaseQty: stock.suggestedReorder,
+      // Pre-computed exact consumption & stockout metrics (matching InventoryPlanning)
+      dailyUsage30d: consumption.window30d.dailyUsage,
+      dailyUsage90d: consumption.window90d.dailyUsage,
+      dailyUsageYTD: consumption.windowYTD.dailyUsage,
+      dailyUsage365d: consumption.window365d.dailyUsage,
+      primaryDailyUsage: consumption.primaryDailyUsage,
+      primaryWindowLabel: consumption.primarySourceLabel,
+      estimatedWorkingDaysLeft: consumption.primaryWorkingDaysRemaining,
+      estimatedDepletionDate: consumption.primaryDepletionDateStr,
+      depletionDate90d: consumption.window90d.depletionDateStr,
+      depletionDateYTD: consumption.windowYTD.depletionDateStr,
+      depletionDate365d: consumption.window365d.depletionDateStr,
+      totalOut90d: consumption.window90d.totalOut,
+      totalOutYTD: consumption.windowYTD.totalOut,
+      totalOut365d: consumption.window365d.totalOut,
+      allTimeOut: consumption.allTimeOut,
+      lastOutDate: consumption.lastOutDateStr,
+      batches: [...stock.expiredBatches, ...stock.nearingBatches, ...stock.validBatches].map(b => ({
+        batchNumber: b.batchNumber,
+        expiryDate: b.expiryDate,
+        quantity: b.quantity,
+        isExpired: b.isExpired,
+        daysLeft: b.daysLeft,
+      })),
+    };
+  });
+
+  // Aggregate department OUT consumption
+  const deptOutTotals: Record<string, number> = {};
+  const recentOutTransactions: any[] = [];
+  const sortedTx = [...transactions].sort((a, b) => {
+    const da = parseTransactionDate(a)?.getTime() || 0;
+    const db = parseTransactionDate(b)?.getTime() || 0;
+    return db - da;
+  });
+
+  for (const t of sortedTx) {
+    if (t?.type === 'OUT') {
+      const dept = t.department || 'Chung / Khác';
+      deptOutTotals[dept] = Number(((deptOutTotals[dept] || 0) + Number(t.quantity || 0)).toFixed(2));
+      if (recentOutTransactions.length < 40) {
+        const matchedItem = items.find(i => i.id === t.itemId);
+        const dt = parseTransactionDate(t);
+        recentOutTransactions.push({
+          date: dt ? formatDateVi(dt) : t.date || '',
+          itemName: matchedItem?.name || t.itemName || 'Vật tư',
+          quantity: Number(t.quantity || 0),
+          unit: matchedItem?.unit || t.unit || '',
+          department: dept,
+        });
+      }
+    }
+  }
+
+  return {
+    todayStr: formatDateVi(now),
+    holidaysRecordedCount: holidaySet.size,
+    totalItemsCount: items.length,
+    totalTransactionsCount: transactions.length,
+    items: enrichedItems,
+    departmentConsumptionTotals: deptOutTotals,
+    recentOutTransactions,
+  };
+}
+
 export function generateExpertInventoryAnalysis(
   items: any[] = [],
   transactions: any[] = [],
@@ -258,19 +699,16 @@ export function generateExpertInventoryAnalysis(
   const now = new Date();
   const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
 
-  // 1. Phân tích chi tiết hạn dùng và tồn khả dụng từng vật tư
   const analyzedItems: ItemStockAnalysis[] = items.map(i =>
     computeItemStockAndExpiry(i, now, sixtyDaysLater, categories)
   );
 
-  // Nhóm phân loại chính xác theo tồn khả dụng thực tế
   const expiredItems = analyzedItems.filter(a => a.hasExpired);
   const outOfStockItems = analyzedItems.filter(a => a.usableStock <= 0);
   const lowStockItems = analyzedItems.filter(a => a.usableStock > 0 && a.usableStock <= a.minStock);
   const nearingExpiryItems = analyzedItems.filter(a => a.hasNearing && !a.hasExpired);
   const safeItems = analyzedItems.filter(a => a.usableStock > a.minStock && !a.hasExpired);
 
-  // 2. Phân tích giao dịch xuất kho gần đây
   const outTransactions = transactions.filter(t => t.type === 'OUT');
   const consumptionByItem: Record<string, { name: string; qty: number; unit: string }> = {};
   outTransactions.forEach(t => {
@@ -289,10 +727,8 @@ export function generateExpertInventoryAnalysis(
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5);
 
-  // 3. Tổng hợp Cảnh báo (Alerts)
   const alerts: { type: 'danger' | 'warning' | 'info'; message: string; item?: string }[] = [];
 
-  // 🚨 CẢNH BÁO QUÁ HẠN & THIẾU HỤT KHẢ DỤNG (ĐẶC BIỆT QUAN TRỌNG)
   expiredItems.forEach(a => {
     const expInfo = a.expiredBatches.map(b => `${b.batchNumber} (HSD: ${b.expiryDate})`).join(', ') || a.earliestExpiryDateStr;
     if (a.isFullyExpired) {
@@ -310,7 +746,6 @@ export function generateExpertInventoryAnalysis(
     }
   });
 
-  // Cảnh báo cạn kho (không có hàng hoặc tồn khả dụng = 0)
   outOfStockItems
     .filter(a => !a.hasExpired)
     .slice(0, 4)
@@ -322,7 +757,6 @@ export function generateExpertInventoryAnalysis(
       });
     });
 
-  // Cảnh báo chạm ngưỡng tối thiểu
   lowStockItems.slice(0, 5).forEach(a => {
     alerts.push({
       type: 'warning',
@@ -331,7 +765,6 @@ export function generateExpertInventoryAnalysis(
     });
   });
 
-  // Cảnh báo cận hạn trong 60 ngày
   nearingExpiryItems.slice(0, 4).forEach(a => {
     const nearInfo = a.nearingBatches.map(b => `${b.batchNumber} (còn ${b.daysLeft} ngày)`).join(', ');
     alerts.push({
@@ -349,10 +782,8 @@ export function generateExpertInventoryAnalysis(
     });
   }
 
-  // 4. Đề xuất hành động (Recommendations) - MUA SẮM BỔ SUNG LÀ TRỌNG TÂM
   const recommendations: { action: string; priority: 'high' | 'medium' | 'low'; reason: string }[] = [];
 
-  // ƯU TIÊN SỐ 1: MUA SẮM BỔ SUNG CHO CÁC MẶT HÀNG ĐÃ HẾT HẠN
   if (expiredItems.length > 0) {
     expiredItems.forEach(a => {
       recommendations.push({
@@ -368,7 +799,6 @@ export function generateExpertInventoryAnalysis(
     });
   }
 
-  // ƯU TIÊN SỐ 2: MUA BỔ SUNG CÁC MẶT HÀNG CẠN KHO KHÁC (Tồn = 0)
   const regularOutOfStock = outOfStockItems.filter(a => !a.hasExpired);
   if (regularOutOfStock.length > 0) {
     recommendations.push({
@@ -378,7 +808,6 @@ export function generateExpertInventoryAnalysis(
     });
   }
 
-  // ƯU TIÊN SỐ 3: DỰ TRÙ CHO VẬT TƯ CHẠM ĐỊNH MỨC
   if (lowStockItems.length > 0) {
     recommendations.push({
       action: `Đưa vào danh sách dự trù định kỳ: ${lowStockItems.map(a => a.name).slice(0, 4).join(', ')}`,
@@ -387,7 +816,6 @@ export function generateExpertInventoryAnalysis(
     });
   }
 
-  // ƯU TIÊN SỐ 4: ĐIỀU PHỐI XUẤT TRƯỚC (FEFO) CHO LÔ CẬN HẠN
   if (nearingExpiryItems.length > 0) {
     recommendations.push({
       action: `Điều phối xuất trước (FEFO) cho các lô sắp hết hạn: ${nearingExpiryItems.map(a => a.name).slice(0, 3).join(', ')}`,
@@ -402,7 +830,6 @@ export function generateExpertInventoryAnalysis(
     reason: `Duy trì tính chính xác giữa số liệu sổ sách và lượng vật tư thực tế tại kho trung tâm và các phòng máy.`,
   });
 
-  // 5. Phát hiện bất thường (Anomalies)
   const anomalies: { description: string; severity: 'high' | 'medium' | 'low' }[] = [];
 
   expiredItems.forEach(a => {
@@ -421,10 +848,8 @@ export function generateExpertInventoryAnalysis(
     }
   });
 
-  // 6. Tóm tắt tổng quan (Summary)
   const summary = `Kho hiện có ${items.length} danh mục vật tư. Phát hiện ${expiredItems.length} mặt hàng có lô quá hạn (Tồn khả dụng bị ảnh hưởng nghiêm trọng), ${outOfStockItems.length} mặt hàng cạn kho khả dụng, ${lowStockItems.length} mặt hàng chạm ngưỡng dự trù và ${nearingExpiryItems.length} mặt hàng cận hạn. Đã tự động tạo các đề xuất mua sắm bổ sung khẩn cấp để bù đắp lượng hàng đã hết hạn.`;
 
-  // 7. Báo cáo chi tiết định dạng Markdown (Detailed Analysis) với Bảng Biểu
   let detailedAnalysis = `### BÁO CÁO PHÂN TÍCH CHUYÊN SÂU KHO VẬT TƯ CĐHA\n\n`;
   detailedAnalysis += `#### 1. Tổng quan tình trạng kho & Tồn khả dụng\n`;
   detailedAnalysis += `- **Tổng số mặt hàng quản lý:** **${items.length}** vật tư\n`;
@@ -434,7 +859,6 @@ export function generateExpertInventoryAnalysis(
   detailedAnalysis += `- **Vật tư chạm định mức cảnh báo:** **${lowStockItems.length}** mặt hàng\n`;
   detailedAnalysis += `- **Vật tư cận hạn trong 60 ngày (Cần xuất trước FEFO):** **${nearingExpiryItems.length}** mặt hàng\n\n`;
 
-  // BẢNG 1: VẬT TƯ HẾT HẠN & ĐỀ XUẤT MUA SẮM BỔ SUNG
   if (expiredItems.length > 0) {
     detailedAnalysis += `#### 🚨 2. Danh mục Vật tư Quá Hạn & Đề xuất Mua Sắm Bổ Sung Khẩn Cấp\n\n`;
     detailedAnalysis += `Toàn bộ số lượng vật tư quá hạn **bắt buộc phải niêm phong và không được sử dụng**. Hệ thống tự động tính toán số lượng cần mua bổ sung ngay lập tức để duy trì hoạt động chuyên môn:\n\n`;
@@ -449,7 +873,6 @@ export function generateExpertInventoryAnalysis(
     detailedAnalysis += `\n`;
   }
 
-  // BẢNG 2: VẬT TƯ CẠN KHO HOẶC CHẠM ĐỊNH MỨC CẦN DỰ TRÙ
   const needReorderGeneral = analyzedItems.filter(a => a.isDeficit && !a.hasExpired);
   if (needReorderGeneral.length > 0) {
     detailedAnalysis += `#### 📝 3. Danh mục Vật tư Cạn Kho & Chạm Định Mức Cần Dự Trù\n\n`;
@@ -463,7 +886,6 @@ export function generateExpertInventoryAnalysis(
     detailedAnalysis += `\n`;
   }
 
-  // BẢNG 3: VẬT TƯ CẬN HẠN (< 60 NGÀY) CẦN ĐIỀU PHỐI FEFO
   if (nearingExpiryItems.length > 0) {
     detailedAnalysis += `#### ⏱️ 4. Danh mục Lô Hàng Cận Hạn Cần Điều Phối Xuất Trước (FEFO)\n\n`;
     detailedAnalysis += `| STT | Tên vật tư | Số lô | Hạn dùng | Còn lại | Số lượng | Đơn vị | Khuyến nghị FEFO |\n`;
@@ -501,116 +923,688 @@ export function generateExpertInventoryAnalysis(
   };
 }
 
-// Fallback & Offline Q&A Engine for Warehouse Assistant with Table Formatting
+function extractHorizonAndSafetyFromQuestion(cleanQ: string): {
+  horizonDays: number | null;
+  safetyPercent: number;
+  preferredWindow: '30d' | '90d' | 'ytd' | '365d' | null;
+} {
+  let horizonDays: number | null = null;
+  const dayMatch = cleanQ.match(/(\d+)\s*ngay(\s+toi|\s+tiep|\s+sau|\s+nua|\s+du\s*tru)?/);
+  const weekMatch = cleanQ.match(/(\d+)\s*tuan(\s+toi|\s+tiep|\s+sau|\s+nua)?/);
+  const monthMatch = cleanQ.match(/(\d+)\s*thang(\s+toi|\s+tiep|\s+sau|\s+nua)?/);
+
+  if (dayMatch && !cleanQ.includes(`${dayMatch[1]} ngay gan nhat`)) {
+    horizonDays = Math.min(730, Math.max(1, parseInt(dayMatch[1], 10)));
+  } else if (weekMatch) {
+    horizonDays = Math.min(730, Math.max(1, parseInt(weekMatch[1], 10) * 7));
+  } else if (monthMatch) {
+    horizonDays = Math.min(730, Math.max(1, parseInt(monthMatch[1], 10) * 30));
+  } else if (cleanQ.includes('tuan toi')) {
+    horizonDays = 7;
+  } else if (cleanQ.includes('thang toi')) {
+    horizonDays = 30;
+  } else if (cleanQ.includes('quy toi')) {
+    horizonDays = 90;
+  }
+
+  let safetyPercent = 0;
+  const pctMatch = cleanQ.match(/(?:du\s*phong|an\s*toan|them|dem)\s*(\d+)\s*%/);
+  const genericPct = cleanQ.match(/(\d+)\s*%/);
+  if (pctMatch) {
+    safetyPercent = Math.min(200, Math.max(0, parseInt(pctMatch[1], 10)));
+  } else if (genericPct) {
+    safetyPercent = Math.min(200, Math.max(0, parseInt(genericPct[1], 10)));
+  }
+
+  let preferredWindow: '30d' | '90d' | 'ytd' | '365d' | null = null;
+  if (cleanQ.includes('30 ngay')) preferredWindow = '30d';
+  else if (cleanQ.includes('90 ngay')) preferredWindow = '90d';
+  else if (cleanQ.includes('dau nam') || cleanQ.includes('ytd')) preferredWindow = 'ytd';
+  else if (cleanQ.includes('1 nam') || cleanQ.includes('365 ngay')) preferredWindow = '365d';
+
+  return { horizonDays, safetyPercent, preferredWindow };
+}
+
+function formatSingleItemExpertReport(
+  matchedAnalysis: ItemStockAnalysis,
+  consumption: ItemConsumptionAnalysis,
+  transactions: any[],
+  holidays: any[],
+  isForecastQuery: boolean,
+  isExpiryQuery: boolean,
+  now: Date,
+  options?: { horizonDays?: number | null; safetyPercent?: number; preferredWindow?: '30d' | '90d' | 'ytd' | '365d' | null }
+): string {
+  let statusText = '🟢 An toàn';
+  if (matchedAnalysis.isFullyExpired) statusText = '🔴 Toàn bộ đã hết hạn (Tồn khả dụng = 0)';
+  else if (matchedAnalysis.hasExpired) statusText = `⚠️ Hết hạn ${matchedAnalysis.expiredQty} ${matchedAnalysis.unit}`;
+  else if (matchedAnalysis.usableStock <= 0) statusText = '🔴 Cạn kho hoàn toàn';
+  else if (matchedAnalysis.usableStock <= matchedAnalysis.minStock) statusText = '🟡 Cảnh báo (Dưới định mức tối thiểu)';
+
+  const selectedWindow =
+    options?.preferredWindow === '30d'
+      ? consumption.window30d
+      : options?.preferredWindow === 'ytd'
+      ? consumption.windowYTD
+      : options?.preferredWindow === '365d'
+      ? consumption.window365d
+      : options?.preferredWindow === '90d'
+      ? consumption.window90d
+      : null;
+
+  const activeDailyUsage = selectedWindow ? selectedWindow.dailyUsage : consumption.primaryDailyUsage;
+  const activeSourceLabel = selectedWindow ? selectedWindow.label : consumption.primarySourceLabel;
+  const activeWorkingDaysRem = selectedWindow ? selectedWindow.workingDaysRemaining : consumption.primaryWorkingDaysRemaining;
+  const activeDepletionDate = selectedWindow ? selectedWindow.depletionDateStr : consumption.primaryDepletionDateStr;
+
+  let ans = isForecastQuery
+    ? `### ⏳ Ước tính Ngày Hết & Dự báo Tiêu hao: **${matchedAnalysis.name}**\n\n`
+    : `### 🔍 Thông tin chi tiết vật tư: **${matchedAnalysis.name}**\n\n`;
+
+  // Custom horizon reorder calculation if user specified e.g. "cho 45 ngày tới với dự phòng 20%"
+  if (options?.horizonDays && options.horizonDays > 0) {
+    const holidaySet = buildHolidaySet(holidays);
+    const futureEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + options.horizonDays);
+    const futureWorkingDays = Math.max(1, countWorkingDays(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1), futureEnd, holidaySet));
+    const baseDemand = Number((activeDailyUsage * futureWorkingDays).toFixed(2));
+    const safetyQty = Number((baseDemand * ((options.safetyPercent || 0) / 100)).toFixed(2));
+    const grossRequired = Number((baseDemand + safetyQty + matchedAnalysis.minStock).toFixed(2));
+    const netNeed = Math.max(0, Math.ceil(grossRequired - matchedAnalysis.usableStock));
+    const estCost = netNeed * matchedAnalysis.price;
+
+    ans += `> 🎯 **Dự trù riêng cho ${options.horizonDays} ngày tới (${futureWorkingDays} ngày làm việc thực tế, từ ${formatDateVi(now)} → ${formatDateVi(futureEnd)}):**\n` +
+      `> - Nhu cầu tiêu hao dự kiến: **${baseDemand} ${matchedAnalysis.unit}** (tốc độ **${activeDailyUsage} ${matchedAnalysis.unit}/ngày lv** theo *${activeSourceLabel}*)\n` +
+      (options.safetyPercent ? `> - Dư lượng dự phòng an toàn (+${options.safetyPercent}%): **${safetyQty} ${matchedAnalysis.unit}**\n` : '') +
+      `> - Tồn tối thiểu cần giữ: **${matchedAnalysis.minStock} ${matchedAnalysis.unit}** · Tồn khả dụng hiện có: **${matchedAnalysis.usableStock} ${matchedAnalysis.unit}**\n` +
+      `> - 👉 **Đề xuất cần nhập thêm:** **${netNeed > 0 ? `+${netNeed} ${matchedAnalysis.unit}` : '0 (Đủ dùng)'}**` +
+      (netNeed > 0 && estCost > 0 ? ` *(Ước tính: **${estCost.toLocaleString('vi-VN')} đ**)*` : '') + `\n\n`;
+  } else if (isForecastQuery) {
+    if (matchedAnalysis.usableStock <= 0) {
+      ans += `> 🚨 **Kết luận nhanh:** Hiện tại tồn kho khả dụng an toàn của **${matchedAnalysis.name}** là **0 ${matchedAnalysis.unit}**${matchedAnalysis.hasExpired ? ` (do có ${matchedAnalysis.expiredQty} ${matchedAnalysis.unit} đã hết hạn)` : ''}. Cần nhập bổ sung ngay!\n\n`;
+    } else if (activeDailyUsage > 0) {
+      ans += `> 📅 **Ước tính ngày hết dự kiến (${activeSourceLabel}):** Khoảng ngày **${activeDepletionDate}** (còn khoảng **${activeWorkingDaysRem} ngày làm việc thực tế**, với tồn khả dụng **${matchedAnalysis.usableStock} ${matchedAnalysis.unit}** và tốc độ tiêu hao trung bình **${activeDailyUsage} ${matchedAnalysis.unit}/ngày làm việc**).\n\n`;
+    } else {
+      ans += `> ℹ️ Hiện tại vật tư **${matchedAnalysis.name}** còn **${matchedAnalysis.usableStock} ${matchedAnalysis.unit}** tồn khả dụng, nhưng **chưa ghi nhận giao dịch xuất kho** trong kỳ tham chiếu nên chưa thể tính ngày hết dự kiến.\n\n`;
+    }
+  }
+
+  ans += `| Thuộc tính | Giá trị |\n`;
+  ans += `| :--- | :--- |\n`;
+  ans += `| **Nhóm phân loại** | ${matchedAnalysis.categoryName} |\n`;
+  ans += `| **Tồn kho sổ sách** | ${matchedAnalysis.totalStock} ${matchedAnalysis.unit} |\n`;
+  ans += `| **Lượng hàng đã hết hạn** | **${matchedAnalysis.expiredQty} ${matchedAnalysis.unit}** |\n`;
+  ans += `| **Tồn khả dụng an toàn (dùng cho BN)** | **${matchedAnalysis.usableStock} ${matchedAnalysis.unit}** |\n`;
+  ans += `| **Định mức tồn tối thiểu** | ${matchedAnalysis.minStock} ${matchedAnalysis.unit} |\n`;
+  ans += `| **Tốc độ tiêu hao (${activeSourceLabel})** | **${activeDailyUsage} ${matchedAnalysis.unit}/ngày làm việc** |\n`;
+  ans += `| **Ngày hết dự kiến (trừ ngày nghỉ)** | **${activeDepletionDate}**${activeWorkingDaysRem !== null ? ` (còn **${activeWorkingDaysRem}** ngày lv)` : ''} |\n`;
+  ans += `| **Đơn giá** | ${matchedAnalysis.price.toLocaleString('vi-VN')} đ |\n`;
+  ans += `| **Trạng thái kho** | ${statusText} |\n`;
+  if (matchedAnalysis.isDeficit) {
+    ans += `| **Đề xuất mua sắm bổ sung** | **+${matchedAnalysis.suggestedReorder} ${matchedAnalysis.unit}** |\n`;
+  }
+  ans += `\n`;
+
+  if (isForecastQuery || consumption.allTimeOut > 0) {
+    ans += `**📊 Chi tiết Dự báo theo các Chu kỳ Tiêu hao Thực tế (tính đến ${formatDateVi(now)}, đã trừ ngày nghỉ):**\n\n`;
+    ans += `| Chu kỳ tham chiếu | Tổng xuất trong kỳ | Số ngày làm việc | Tiêu hao/ngày lv | Ngày làm việc còn lại | Ngày hết dự kiến |\n`;
+    ans += `| :--- | :---: | :---: | :---: | :---: | :---: |\n`;
+    const windows = [consumption.window30d, consumption.window90d, consumption.windowYTD, consumption.window365d];
+    for (const w of windows) {
+      ans += `| **${w.label}** | ${w.totalOut} ${matchedAnalysis.unit} | ${w.workingDays} ngày | **${w.dailyUsage}** ${matchedAnalysis.unit}/ngày | ${w.workingDaysRemaining !== null ? `**${w.workingDaysRemaining} ngày**` : 'N/A'} | **${w.depletionDateStr}** |\n`;
+    }
+    ans += `\n`;
+  }
+
+  const allBatches = [...matchedAnalysis.expiredBatches, ...matchedAnalysis.nearingBatches, ...matchedAnalysis.validBatches];
+  if (allBatches.length > 0 && (isExpiryQuery || !isForecastQuery || matchedAnalysis.hasExpired || matchedAnalysis.hasNearing)) {
+    ans += `**📦 Chi tiết các lô hàng đang lưu kho:**\n\n`;
+    ans += `| STT | Số lô | Số lượng | Đơn vị | Hạn sử dụng | Trạng thái lô |\n`;
+    ans += `| :---: | :--- | :---: | :---: | :---: | :---: |\n`;
+    allBatches.forEach((b, idx) => {
+      let bStatus = '🟢 Còn hạn';
+      if (b.isExpired) bStatus = '🔴 ĐÃ QUÁ HẠN';
+      else if (b.isNearing) bStatus = `🟡 Cận hạn (còn ${b.daysLeft} ngày)`;
+
+      ans += `| ${idx + 1} | \`${b.batchNumber}\` | **${b.quantity}** | ${matchedAnalysis.unit} | ${b.expiryDate || 'Không có hạn'} | ${bStatus} |\n`;
+    });
+    ans += `\n`;
+  }
+
+  const itemOutTx = transactions
+    .filter(t => t?.type === 'OUT' && (t.itemId === matchedAnalysis.item?.id || removeVietnameseTones(t.itemName || '') === removeVietnameseTones(matchedAnalysis.name)))
+    .sort((a, b) => (parseTransactionDate(b)?.getTime() || 0) - (parseTransactionDate(a)?.getTime() || 0))
+    .slice(0, 5);
+
+  if (itemOutTx.length > 0 && (isForecastQuery || options?.horizonDays)) {
+    ans += `**🧾 5 lần xuất kho gần nhất của ${matchedAnalysis.name}:**\n\n`;
+    ans += `| Ngày xuất | Số lượng | Đơn vị | Phòng / Nơi sử dụng |\n`;
+    ans += `| :---: | :---: | :---: | :--- |\n`;
+    for (const t of itemOutTx) {
+      const d = parseTransactionDate(t);
+      ans += `| ${d ? formatDateVi(d) : (t.date || '-')} | **${t.quantity}** | ${matchedAnalysis.unit} | ${t.department || 'Chung'} |\n`;
+    }
+    ans += `\n`;
+  }
+
+  return ans;
+}
+
+// Structured Function-Calling Executors for Gemini AI Server Tools
+export function executeInventoryTool(
+  toolName: string,
+  args: Record<string, any> = {},
+  items: any[] = [],
+  transactions: any[] = [],
+  holidays: any[] = [],
+  categories: any[] = []
+): any {
+  const now = new Date();
+  const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+  const holidaySet = buildHolidaySet(holidays);
+  const analyzedItems = items.map(i => computeItemStockAndExpiry(i, now, sixtyDaysLater, categories));
+
+  if (toolName === 'searchInventoryItems') {
+    const queryStr = String(args.query || '').trim();
+    const categoryFilter = removeVietnameseTones(String(args.categoryFilter || ''));
+
+    let candidates = analyzedItems;
+    if (categoryFilter) {
+      candidates = candidates.filter(a => removeVietnameseTones(a.categoryName).includes(categoryFilter));
+    }
+
+    const matches = queryStr ? findMatchingItems(queryStr, candidates) : candidates.map(a => ({ analysis: a, score: 1, matchedTokens: [] }));
+    const topList = (matches.length > 0 ? matches.map(m => m.analysis) : candidates.slice(0, 15)).slice(0, 15);
+
+    return {
+      todayStr: formatDateVi(now),
+      matchedCount: topList.length,
+      items: topList.map(a => {
+        const c = computeItemConsumptionAndDepletion(a, transactions, holidays, now);
+        return {
+          id: a.item?.id,
+          name: a.name,
+          category: a.categoryName,
+          unit: a.unit,
+          price: a.price,
+          totalStock: a.totalStock,
+          usableStock: a.usableStock,
+          expiredQty: a.expiredQty,
+          nearingQty: a.nearingQty,
+          minStock: a.minStock,
+          dailyUsage90d: c.window90d.dailyUsage,
+          dailyUsageYTD: c.windowYTD.dailyUsage,
+          dailyUsage365d: c.window365d.dailyUsage,
+          estimatedDepletionDate: c.primaryDepletionDateStr,
+          workingDaysRemaining: c.primaryWorkingDaysRemaining,
+          batches: [...a.expiredBatches, ...a.nearingBatches, ...a.validBatches].map(b => ({
+            batchNumber: b.batchNumber,
+            expiryDate: b.expiryDate,
+            quantity: b.quantity,
+            isExpired: b.isExpired,
+            daysLeft: b.daysLeft,
+          })),
+        };
+      }),
+    };
+  }
+
+  if (toolName === 'forecastItemDepletion') {
+    const queryStr = String(args.itemQuery || '').trim();
+    const horizonDays = Math.min(730, Math.max(0, Number(args.horizonDays || 30)));
+    const safetyPercent = Math.min(200, Math.max(0, Number(args.safetyPercent || 0)));
+    const refWindow = String(args.referenceWindow || '90d');
+
+    const matches = queryStr ? findMatchingItems(queryStr, analyzedItems) : [];
+    const targetList = (matches.length > 0 ? matches.slice(0, 5).map(m => m.analysis) : analyzedItems.slice(0, 10));
+
+    const futureEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + horizonDays);
+    const futureWorkingDays = horizonDays > 0
+      ? Math.max(1, countWorkingDays(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1), futureEnd, holidaySet))
+      : 0;
+
+    return {
+      todayStr: formatDateVi(now),
+      horizonDays,
+      futureWorkingDays,
+      safetyPercent,
+      referenceWindow: refWindow,
+      forecasts: targetList.map(a => {
+        const c = computeItemConsumptionAndDepletion(a, transactions, holidays, now);
+        const chosen =
+          refWindow === '30d' ? c.window30d :
+          refWindow === 'ytd' ? c.windowYTD :
+          refWindow === '365d' ? c.window365d :
+          c.window90d;
+        const rate = chosen.dailyUsage > 0 ? chosen.dailyUsage : c.primaryDailyUsage;
+        const baseDemand = Number((rate * futureWorkingDays).toFixed(2));
+        const safetyQty = Number((baseDemand * (safetyPercent / 100)).toFixed(2));
+        const grossRequired = Number((baseDemand + safetyQty + a.minStock).toFixed(2));
+        const recommendedImportQty = Math.max(0, Math.ceil(grossRequired - a.usableStock));
+
+        return {
+          name: a.name,
+          category: a.categoryName,
+          unit: a.unit,
+          totalStock: a.totalStock,
+          expiredQty: a.expiredQty,
+          usableStock: a.usableStock,
+          minStock: a.minStock,
+          price: a.price,
+          windows: {
+            d30: c.window30d,
+            d90: c.window90d,
+            ytd: c.windowYTD,
+            d365: c.window365d,
+          },
+          primarySource: c.primarySourceLabel,
+          primaryDailyUsage: c.primaryDailyUsage,
+          estimatedDepletionDate: c.primaryDepletionDateStr,
+          workingDaysRemaining: c.primaryWorkingDaysRemaining,
+          horizonPlan: horizonDays > 0 ? {
+            futureWorkingDays,
+            baseDemand,
+            safetyQty,
+            recommendedImportQty,
+            estimatedCostVND: recommendedImportQty * a.price,
+          } : null,
+        };
+      }),
+    };
+  }
+
+  if (toolName === 'analyzeTransactionsAndDepartments') {
+    const itemQuery = String(args.itemQuery || '').trim();
+    const deptFilter = removeVietnameseTones(String(args.department || ''));
+    const txType = String(args.type || 'OUT').toUpperCase();
+    const days = Math.min(730, Math.max(1, Number(args.days || 90)));
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+
+    let targetItemIds: Set<string> | null = null;
+    if (itemQuery) {
+      const matched = findMatchingItems(itemQuery, analyzedItems).slice(0, 5);
+      targetItemIds = new Set(matched.map(m => m.analysis.item?.id).filter(Boolean));
+    }
+
+    const filtered = transactions.filter(t => {
+      if (txType !== 'ALL' && t?.type !== txType) return false;
+      const d = parseTransactionDate(t);
+      if (d && d < cutoff) return false;
+      if (targetItemIds && targetItemIds.size > 0 && !targetItemIds.has(t.itemId)) return false;
+      if (deptFilter) {
+        const tDept = removeVietnameseTones(t.department || '');
+        const deptAliases = [deptFilter];
+        if (deptFilter === 'clvt') deptAliases.push('ct');
+        if (deptFilter === 'ct') deptAliases.push('clvt');
+        if (deptFilter === 'cht') deptAliases.push('mri');
+        if (deptFilter === 'mri') deptAliases.push('cht');
+        if (deptFilter === 'xquang') deptAliases.push('x quang');
+        if (deptFilter === 'x quang') deptAliases.push('xquang');
+        if (!deptAliases.some(alias => tDept.includes(alias))) return false;
+      }
+      return true;
+    });
+
+    const byDept: Record<string, number> = {};
+    const byItem: Record<string, { name: string; unit: string; totalQty: number; txCount: number }> = {};
+
+    for (const t of filtered) {
+      const qty = Number(t.quantity || 0);
+      const dept = t.department || 'Chung / Khác';
+      byDept[dept] = Number(((byDept[dept] || 0) + qty).toFixed(2));
+
+      const matched = items.find(i => i.id === t.itemId);
+      const name = matched?.name || t.itemName || 'Vật tư';
+      const unit = matched?.unit || t.unit || 'đơn vị';
+      const key = matched?.id || name;
+      if (!byItem[key]) byItem[key] = { name, unit, totalQty: 0, txCount: 0 };
+      byItem[key].totalQty = Number((byItem[key].totalQty + qty).toFixed(2));
+      byItem[key].txCount++;
+    }
+
+    const recent = [...filtered]
+      .sort((a, b) => (parseTransactionDate(b)?.getTime() || 0) - (parseTransactionDate(a)?.getTime() || 0))
+      .slice(0, 20)
+      .map(t => {
+        const d = parseTransactionDate(t);
+        const matched = items.find(i => i.id === t.itemId);
+        return {
+          date: d ? formatDateVi(d) : t.date || '',
+          type: t.type,
+          itemName: matched?.name || t.itemName || 'Vật tư',
+          quantity: Number(t.quantity || 0),
+          unit: matched?.unit || t.unit || '',
+          department: t.department || 'Chung',
+        };
+      });
+
+    return {
+      periodDays: days,
+      txType,
+      matchedTransactionsCount: filtered.length,
+      departmentBreakdown: byDept,
+      topItems: Object.values(byItem).sort((a, b) => b.totalQty - a.totalQty).slice(0, 15),
+      recentTransactions: recent,
+    };
+  }
+
+  if (toolName === 'checkExpiryAndFefo') {
+    const nearingDays = Math.min(365, Math.max(1, Number(args.nearingDays || 60)));
+    const cutoffDate = new Date(now.getTime() + nearingDays * 24 * 60 * 60 * 1000);
+    const customAnalyzed = items.map(i => computeItemStockAndExpiry(i, now, cutoffDate, categories));
+
+    return {
+      todayStr: formatDateVi(now),
+      nearingDaysWindow: nearingDays,
+      expiredItems: customAnalyzed
+        .filter(a => a.hasExpired)
+        .map(a => ({
+          name: a.name,
+          category: a.categoryName,
+          unit: a.unit,
+          totalStock: a.totalStock,
+          expiredQty: a.expiredQty,
+          usableStock: a.usableStock,
+          suggestedReorder: a.suggestedReorder,
+          expiredBatches: a.expiredBatches,
+        })),
+      nearingItems: customAnalyzed
+        .filter(a => a.hasNearing)
+        .map(a => ({
+          name: a.name,
+          category: a.categoryName,
+          unit: a.unit,
+          nearingQty: a.nearingQty,
+          usableStock: a.usableStock,
+          nearingBatches: a.nearingBatches,
+        })),
+    };
+  }
+
+  if (toolName === 'computeInventoryValuation') {
+    const byCategory: Record<string, { itemCount: number; totalValue: number; usableValue: number; expiredValue: number }> = {};
+    let totalValue = 0;
+    let usableValue = 0;
+    let expiredValue = 0;
+
+    for (const a of analyzedItems) {
+      const tv = a.totalStock * a.price;
+      const uv = a.usableStock * a.price;
+      const ev = a.expiredQty * a.price;
+      totalValue += tv;
+      usableValue += uv;
+      expiredValue += ev;
+
+      if (!byCategory[a.categoryName]) {
+        byCategory[a.categoryName] = { itemCount: 0, totalValue: 0, usableValue: 0, expiredValue: 0 };
+      }
+      byCategory[a.categoryName].itemCount++;
+      byCategory[a.categoryName].totalValue += tv;
+      byCategory[a.categoryName].usableValue += uv;
+      byCategory[a.categoryName].expiredValue += ev;
+    }
+
+    const topValueItems = [...analyzedItems]
+      .map(a => ({ name: a.name, category: a.categoryName, usableStock: a.usableStock, unit: a.unit, price: a.price, usableValue: a.usableStock * a.price }))
+      .sort((a, b) => b.usableValue - a.usableValue)
+      .slice(0, 10);
+
+    return {
+      todayStr: formatDateVi(now),
+      totalItems: analyzedItems.length,
+      totalBookValueVND: Math.round(totalValue),
+      usableSafeValueVND: Math.round(usableValue),
+      expiredLossValueVND: Math.round(expiredValue),
+      byCategory,
+      topValueItems,
+    };
+  }
+
+  return { error: `Unknown tool: ${toolName}` };
+}
+
+// Fallback & Offline Q&A Engine for Warehouse Assistant with High-Accuracy NLP Routing
 export function generateExpertChatAnswer(
   question: string,
   items: any[] = [],
   transactions: any[] = [],
   holidays: any[] = [],
-  categories: any[] = []
+  categories: any[] = [],
+  history: Array<{ role: 'user' | 'model'; text: string }> = []
 ): string {
   const q = (question || '').toLowerCase().trim();
   const cleanQ = removeVietnameseTones(q);
   const now = new Date();
   const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
 
-  // Phân tích trạng thái tồn kho và hạn dùng toàn diện
   const analyzedItems: ItemStockAnalysis[] = items.map(i =>
     computeItemStockAndExpiry(i, now, sixtyDaysLater, categories)
   );
 
-  // 1. KIỂM TRA HỎI VỀ DANH MỤC / NHÓM VẬT TƯ (Category Query)
+  const parsedParams = extractHorizonAndSafetyFromQuestion(cleanQ);
+
+  // Detect intent flags
+  const isForecastIntent =
+    cleanQ.includes('uoc tinh') ||
+    cleanQ.includes('ngay het') ||
+    cleanQ.includes('bao lau') ||
+    cleanQ.includes('dung duoc') ||
+    cleanQ.includes('du bao') ||
+    cleanQ.includes('khi nao het') ||
+    cleanQ.includes('con may ngay') ||
+    parsedParams.horizonDays !== null;
+
+  const isExpiryIntent =
+    cleanQ.includes('het han') ||
+    cleanQ.includes('can han') ||
+    cleanQ.includes('qua han') ||
+    cleanQ.includes('han dung') ||
+    cleanQ.includes('han su dung') ||
+    cleanQ.includes('fefo') ||
+    /(^|\s)(han)(\s|$)/.test(cleanQ);
+
+  const isComparisonIntent =
+    cleanQ.includes('so sanh') || cleanQ.includes('khac nhau') || cleanQ.includes('nhieu hon') || cleanQ.includes('it hon');
+
+  const isValuationIntent =
+    cleanQ.includes('gia tri') || cleanQ.includes('tri gia') || cleanQ.includes('tong tien') || cleanQ.includes('thanh tien') || cleanQ.includes('ngan sach');
+
+  const isInboundIntent =
+    (cleanQ.includes('nhap kho') || cleanQ.includes('lich su nhap') || cleanQ.includes('moi nhap')) &&
+    !cleanQ.includes('can nhap') &&
+    !cleanQ.includes('de xuat nhap');
+
+  // 1. PRIORITY CHECK: SPECIFIC ITEM MATCHING (with optional conversation follow-up fallback)
+  let itemMatches = findMatchingItems(question, analyzedItems);
+
+  const isPronounFollowUp =
+    itemMatches.length === 0 &&
+    history.length > 0 &&
+    (isForecastIntent || isExpiryIntent || parsedParams.preferredWindow !== null || cleanQ.includes('nay') || cleanQ.includes('no') || cleanQ.includes('do') || cleanQ.includes('lo hang'));
+
+  if (isPronounFollowUp) {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const histMatches = findMatchingItems(history[i].text || '', analyzedItems);
+      if (histMatches.length > 0) {
+        itemMatches = histMatches;
+        break;
+      }
+    }
+  }
+
+  const isGlobalListPhrase =
+    cleanQ.includes('danh muc') ||
+    cleanQ.includes('danh sach') ||
+    cleanQ.includes('toan bo') ||
+    cleanQ.includes('tat ca') ||
+    cleanQ.includes('nhung vat tu nao') ||
+    cleanQ.includes('vat tu nao') ||
+    cleanQ.includes('mat hang nao') ||
+    cleanQ.includes('ke hoach du tru');
+
+  // If strong item match(es) found and NOT explicitly asking for a whole-warehouse list
+  if (itemMatches.length > 0 && (!isGlobalListPhrase || isForecastIntent || isComparisonIntent)) {
+    const topScore = itemMatches[0].score;
+    const closeMatches = itemMatches
+      .filter(m => m.score >= Math.max(20, topScore * (isComparisonIntent ? 0.45 : 0.72)))
+      .slice(0, 6);
+
+    if (closeMatches.length > 1 && (isComparisonIntent || topScore - closeMatches[1].score < 12)) {
+      let ans = isComparisonIntent
+        ? `### ⚖️ Bảng So sánh Chi tiết (${closeMatches.length} vật tư phù hợp)\n\n`
+        : isForecastIntent
+        ? `### ⏳ Ước tính Ngày Hết & Dự báo (${closeMatches.length} vật tư phù hợp)\n\n`
+        : `### 🔍 Kết quả Tra cứu (${closeMatches.length} mặt hàng phù hợp)\n\n`;
+
+      ans += `| STT | Tên vật tư | Tồn sổ sách | Tồn khả dụng | Tiêu hao/ngày (90d) | Tiêu hao/ngày (YTD) | Còn lại | Ngày hết dự kiến | Trạng thái |\n`;
+      ans += `| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |\n`;
+
+      closeMatches.forEach((m, idx) => {
+        const a = m.analysis;
+        const c = computeItemConsumptionAndDepletion(a, transactions, holidays, now);
+        let status = '🟢 An toàn';
+        if (a.isFullyExpired) status = '🔴 Hết hạn toàn bộ';
+        else if (a.hasExpired) status = `⚠️ Hết hạn ${a.expiredQty}`;
+        else if (a.usableStock <= 0) status = '🔴 Cạn kho';
+        else if (a.usableStock <= a.minStock) status = '🟡 Chạm định mức';
+
+        ans += `| ${idx + 1} | **${a.name}** | ${a.totalStock} ${a.unit} | **${a.usableStock} ${a.unit}** | **${c.window90d.dailyUsage}** ${a.unit}/ngày | ${c.windowYTD.dailyUsage} ${a.unit}/ngày | ${c.primaryWorkingDaysRemaining !== null ? `**${c.primaryWorkingDaysRemaining} ngày**` : 'N/A'} | **${c.primaryDepletionDateStr}** | ${status} |\n`;
+      });
+
+      ans += `\n*Mẹo:* Bạn có thể hỏi cụ thể tên/kích thước (ví dụ: *"Dự trù ${closeMatches[0].analysis.name} cho 30 ngày tới với dự phòng 15%"*) để xem phương án nhập chi tiết.`;
+      return ans;
+    }
+
+    const best = itemMatches[0].analysis;
+    const consumption = computeItemConsumptionAndDepletion(best, transactions, holidays, now);
+    return formatSingleItemExpertReport(best, consumption, transactions, holidays, isForecastIntent, isExpiryIntent, now, parsedParams);
+  }
+
+  // 2. KIỂM TRA HỎI TỔNG GIÁ TRỊ KHO
+  if (isValuationIntent) {
+    const val = executeInventoryTool('computeInventoryValuation', {}, items, transactions, holidays, categories);
+    let ans = `### 💰 Báo cáo Tổng Giá trị Tài sản & Tồn kho (${val.todayStr})\n\n`;
+    ans += `- **Tổng giá trị sổ sách (${val.totalItems} mặt hàng):** **${val.totalBookValueVND.toLocaleString('vi-VN')} đ**\n`;
+    ans += `- **Giá trị tồn khả dụng an toàn (được phép dùng):** **${val.usableSafeValueVND.toLocaleString('vi-VN')} đ**\n`;
+    if (val.expiredLossValueVND > 0) {
+      ans += `- **Giá trị hàng đã quá hạn (cần niêm phong/xử lý):** **${val.expiredLossValueVND.toLocaleString('vi-VN')} đ**\n`;
+    }
+    ans += `\n| STT | Nhóm vật tư | Số mặt hàng | Giá trị khả dụng | Giá trị quá hạn |\n`;
+    ans += `| :---: | :--- | :---: | :---: | :---: |\n`;
+    Object.entries(val.byCategory as Record<string, any>).forEach(([cat, d], idx) => {
+      ans += `| ${idx + 1} | **${cat}** | ${d.itemCount} | **${Math.round(d.usableValue).toLocaleString('vi-VN')} đ** | ${Math.round(d.expiredValue).toLocaleString('vi-VN')} đ |\n`;
+    });
+    return ans;
+  }
+
+  // 3. KIỂM TRA HỎI LỊCH SỬ NHẬP KHO
+  if (isInboundIntent) {
+    const res = executeInventoryTool('analyzeTransactionsAndDepartments', { type: 'IN', days: 90 }, items, transactions, holidays, categories);
+    let ans = `### 📥 Lịch sử Nhập kho Gần đây (90 ngày qua)\n\n`;
+    if (res.recentTransactions.length === 0) {
+      ans += `Chưa ghi nhận giao dịch nhập kho nào trong 90 ngày qua.`;
+      return ans;
+    }
+    ans += `| Ngày nhập | Tên vật tư | Số lượng | Đơn vị | Ghi chú / Phòng |\n`;
+    ans += `| :---: | :--- | :---: | :---: | :--- |\n`;
+    for (const t of res.recentTransactions) {
+      ans += `| ${t.date} | **${t.itemName}** | **+${t.quantity}** | ${t.unit} | ${t.department} |\n`;
+    }
+    return ans;
+  }
+
+  // 4. KIỂM TRA HỎI VỀ DANH MỤC / NHÓM VẬT TƯ (bỏ qua nếu đang hỏi tiêu hao theo phòng ban cụ thể)
+  const deptKeywordsEarly = ['clvt', 'ct', 'mri', 'cht', 'sieu am', 'dsa', 'noi soi', 'phong x quang', 'phong xquang'];
+  const isSpecificDeptQuestion = deptKeywordsEarly.some(kw => cleanQ.includes(kw)) && !cleanQ.includes('danh muc') && !cleanQ.includes('nhom vat tu');
+
   const isAskingVPP = cleanQ.includes('van phong pham') || cleanQ.includes('vpp');
   const isAskingDuoc = cleanQ.includes('duoc') || cleanQ.includes('thuoc') || cleanQ.includes('dong y') || cleanQ.includes('tay y');
-  const isAskingTieuHao = cleanQ.includes('tieu hao') || cleanQ.includes('vat tu tieu hao');
-  const isAskingHoaChat = cleanQ.includes('hoa chat') || cleanQ.includes('rua phim') || cleanQ.includes('thuoc can quang');
-  const isAskingAllCategories = (cleanQ.includes('danh muc') || cleanQ.includes('danh sach')) && 
-    (cleanQ.includes('cac nhom') || cleanQ.includes('toan bo') || cleanQ.includes('tat ca') || (cleanQ.includes('hien co') && !isAskingVPP && !isAskingDuoc && !isAskingTieuHao && !isAskingHoaChat));
+  const isAskingTieuHao = !isSpecificDeptQuestion && (cleanQ.includes('vat tu tieu hao') || cleanQ.includes('bom tiem') || (cleanQ.includes('tieu hao') && (cleanQ.includes('danh muc') || cleanQ.includes('nhom') || cleanQ.includes('danh sach'))));
+  const isAskingHoaChat = cleanQ.includes('hoa chat') || cleanQ.includes('rua phim') || cleanQ.includes('can quang');
+  const isAskingAllCategories =
+    (cleanQ.includes('danh muc') || cleanQ.includes('danh sach')) &&
+    (cleanQ.includes('cac nhom') || cleanQ.includes('toan bo') || cleanQ.includes('tat ca') ||
+      (cleanQ.includes('hien co') && !isAskingVPP && !isAskingDuoc && !isAskingTieuHao && !isAskingHoaChat));
 
-  if (isAskingVPP || isAskingDuoc || isAskingTieuHao || isAskingHoaChat) {
-    let targetCategoryName = '';
-    let categoryTitle = '';
-    let itemFilter: (a: ItemStockAnalysis) => boolean = () => false;
+  if (!isSpecificDeptQuestion && (isAskingVPP || (isAskingDuoc && !cleanQ.includes('thuoc can quang')) || isAskingTieuHao || isAskingHoaChat)) {
+    const selectedTitles: string[] = [];
+    const filters: Array<(a: ItemStockAnalysis) => boolean> = [];
 
     if (isAskingVPP) {
-      targetCategoryName = 'Văn phòng phẩm';
-      categoryTitle = 'Văn phòng phẩm (VPP)';
-      itemFilter = (a: ItemStockAnalysis) => {
+      selectedTitles.push('Văn phòng phẩm (VPP)');
+      filters.push((a: ItemStockAnalysis) => {
         const cat = removeVietnameseTones(a.categoryName);
         const name = removeVietnameseTones(a.name);
-
         if (
-          cat.includes('duoc') || cat.includes('thuoc') || cat.includes('dong y') || 
-          cat.includes('tay y') || cat.includes('tieu hao') || cat.includes('hoa chat') || 
+          cat.includes('duoc') || cat.includes('thuoc') || cat.includes('dong y') ||
+          cat.includes('tay y') || cat.includes('tieu hao') || cat.includes('hoa chat') ||
           cat.includes('can quang') || cat.includes('phim') || cat.includes('chuan doan') ||
           cat.includes('x quang') || cat.includes('ct') || cat.includes('mri') || cat.includes('dsa')
         ) {
           return false;
         }
-
-        if (cat.includes('van phong pham') || cat.includes('vpp')) {
-          return true;
-        }
-
+        if (cat.includes('van phong pham') || cat.includes('vpp')) return true;
         const vppKeywords = [
           'giay in', 'giay a4', 'giay ve sinh', 'but bi', 'ruot but', 'but da', 'but chi', 'but long',
           'dan ghim', 'kep giay', 'bam kim', 'so tay', 'so ghi chep', 'so theo doi', 'so sach',
-          'muc in', 'bia cong', 'bia la', 'bia ho so', 'bang dinh', 'tay quan ao', 'bot giat'
+          'muc in', 'bia cong', 'bia la', 'bia ho so', 'bang dinh'
         ];
         return vppKeywords.some(kw => name.includes(kw));
-      };
-    } else if (isAskingDuoc) {
-      targetCategoryName = 'Dược (Đông y, Tây y)';
-      categoryTitle = 'Dược (Đông y, Tây y) & Thuốc';
-      itemFilter = (a: ItemStockAnalysis) => {
+      });
+    }
+
+    if (isAskingDuoc && !cleanQ.includes('thuoc can quang')) {
+      selectedTitles.push('Dược (Đông y, Tây y) & Thuốc');
+      filters.push((a: ItemStockAnalysis) => {
         const cat = removeVietnameseTones(a.categoryName);
         const name = removeVietnameseTones(a.name);
-        if (cat.includes('duoc') || cat.includes('thuoc') || cat.includes('dong y') || cat.includes('tay y')) {
-          return true;
-        }
-        const drugKeywords = [
-          'pdsolone', 'vinsolon', 'sodium', 'chloride', 'dimedrol', 'thuoc', 'dich truyen', 'khang sinh', 'giam dau', 'giai doc'
-        ];
+        if (cat.includes('duoc') || cat.includes('thuoc') || cat.includes('dong y') || cat.includes('tay y')) return true;
+        const drugKeywords = ['pdsolone', 'vinsolon', 'sodium', 'chloride', 'dimedrol', 'adrenalin', 'lidocain', 'dich truyen'];
         return drugKeywords.some(kw => name.includes(kw));
-      };
-    } else if (isAskingTieuHao) {
-      targetCategoryName = 'Vật tư tiêu hao';
-      categoryTitle = 'Vật tư tiêu hao';
-      itemFilter = (a: ItemStockAnalysis) => {
-        const cat = removeVietnameseTones(a.categoryName);
-        const name = removeVietnameseTones(a.name);
-        if (cat.includes('tieu hao')) return true;
-        const consumableKeywords = ['tui phim', 'phim x quang', 'phim cat lop', 'day noi', 'bom tiem', 'kim tiem', 'gang tay', 'bang gac'];
-        return consumableKeywords.some(kw => name.includes(kw));
-      };
-    } else if (isAskingHoaChat) {
-      targetCategoryName = 'Hóa chất & Thuốc cản quang';
-      categoryTitle = 'Hóa chất & Thuốc cản quang';
-      itemFilter = (a: ItemStockAnalysis) => {
+      });
+    }
+
+    if (isAskingHoaChat) {
+      selectedTitles.push('Hóa chất & Thuốc cản quang');
+      filters.push((a: ItemStockAnalysis) => {
         const cat = removeVietnameseTones(a.categoryName);
         const name = removeVietnameseTones(a.name);
         if (cat.includes('hoa chat') || cat.includes('can quang')) return true;
-        const chemicalKeywords = ['omnipaque', 'barit', 'ultravist', 'xenetix', 'telebrix', 'gel sieu am', 'rua phim'];
+        const chemicalKeywords = ['omnipaque', 'barit', 'ultravist', 'xenetix', 'telebrix', 'iopromide', 'iohexol', 'gel sieu am', 'rua phim', 'can quang'];
         return chemicalKeywords.some(kw => name.includes(kw));
-      };
+      });
     }
 
-    const matched = analyzedItems.filter(itemFilter);
+    if (isAskingTieuHao) {
+      selectedTitles.push(cleanQ.includes('bom tiem') && !cleanQ.includes('tieu hao') ? 'Bơm tiêm & Dây nối' : 'Vật tư tiêu hao');
+      filters.push((a: ItemStockAnalysis) => {
+        const cat = removeVietnameseTones(a.categoryName);
+        const name = removeVietnameseTones(a.name);
+        if (cleanQ.includes('bom tiem') && !cleanQ.includes('tieu hao')) {
+          return name.includes('bom tiem') || name.includes('kim') || name.includes('day noi');
+        }
+        if (cat.includes('tieu hao')) return true;
+        const consumableKeywords = ['tui phim', 'phim x', 'phim cat lop', 'day noi', 'bom tiem', 'kim luon', 'kim lay', 'gang tay', 'bang gac'];
+        return consumableKeywords.some(kw => name.includes(kw));
+      });
+    }
+
+    const categoryTitle = selectedTitles.join(' & ');
+    const matched = analyzedItems.filter(a => filters.some(fn => fn(a)));
 
     if (matched.length > 0) {
-      let ans = `### 📁 Danh mục Vật tư: Nhóm **${categoryTitle}**\n\n`;
-      ans += `Hiện tại trong kho đang quản lý **${matched.length}** mặt hàng thuộc nhóm này:\n\n`;
-      ans += `| STT | Tên vật tư | Tồn sổ sách | Tồn khả dụng | Đơn vị | Định mức Min | Đơn giá | Trạng thái |\n`;
-      ans += `| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |\n`;
+      let ans = `### 📁 Danh mục Vật tư: **${categoryTitle}**\n\n`;
+      ans += `Hiện tại trong kho đang quản lý **${matched.length}** mặt hàng phù hợp:\n\n`;
+      ans += `| STT | Tên vật tư | Tồn sổ sách | Tồn khả dụng | Tiêu hao/ngày | Ngày hết dự kiến | Trạng thái |\n`;
+      ans += `| :---: | :--- | :---: | :---: | :---: | :---: | :--- |\n`;
 
       matched.forEach((a, idx) => {
-        const priceStr = a.price.toLocaleString('vi-VN') + ' đ';
+        const c = computeItemConsumptionAndDepletion(a, transactions, holidays, now);
         let status = '🟢 Đủ hàng';
         if (a.hasExpired) status = `🔴 Đã hết hạn (${a.expiredQty} ${a.unit})`;
         else if (a.usableStock <= 0) status = '🔴 Cạn kho';
         else if (a.usableStock <= a.minStock) status = '🟡 Chạm định mức';
 
-        ans += `| ${idx + 1} | **${a.name}** | ${a.totalStock} | **${a.usableStock}** | ${a.unit} | ${a.minStock} | ${priceStr} | ${status} |\n`;
+        ans += `| ${idx + 1} | **${a.name}** | ${a.totalStock} ${a.unit} | **${a.usableStock} ${a.unit}** | ${c.primaryDailyUsage} ${a.unit}/ngày | **${c.primaryDepletionDateStr}** | ${status} |\n`;
       });
 
       const outCount = matched.filter(a => a.usableStock <= 0).length;
@@ -618,16 +1612,12 @@ export function generateExpertChatAnswer(
       const expCount = matched.filter(a => a.hasExpired).length;
       const totalUsableUnits = Math.round(matched.reduce((acc, a) => acc + a.usableStock, 0) * 10) / 10;
 
-      ans += `\n**📊 Tóm tắt nhóm ${categoryTitle}:**\n`;
-      ans += `- **Tổng lượng tồn khả dụng (an toàn dùng cho bệnh nhân):** **${totalUsableUnits}** đơn vị.\n`;
-      ans += `- **Tình trạng:** **${matched.length - outCount - lowCount}** mặt hàng an toàn, **${lowCount}** mặt hàng chạm định mức, **${outCount}** mặt hàng cạn kho khả dụng${expCount > 0 ? `, **${expCount}** mặt hàng có lô quá hạn cần mua bù` : ''}.`;
+      ans += `\n**📊 Tóm tắt:** Tổng tồn khả dụng an toàn **${totalUsableUnits}** đơn vị · **${matched.length - outCount - lowCount}** an toàn · **${lowCount}** chạm định mức · **${outCount}** cạn kho${expCount > 0 ? ` · **${expCount}** có lô quá hạn` : ''}.`;
       return ans;
-    } else {
-      return `### 📁 Danh mục: Nhóm **${categoryTitle}**\n\nHiện tại kho chưa có mặt hàng nào được phân loại thuộc nhóm **${categoryTitle}** hoặc chưa có dữ liệu tồn kho cho nhóm này. Bạn có thể kiểm tra lại tại menu Quản lý vật tư.`;
     }
   }
 
-  // 2. TỔNG QUAN DANH SÁCH CÁC NHÓM VẬT TƯ (Bảng tổng hợp)
+  // 5. TỔNG QUAN DANH SÁCH CÁC NHÓM VẬT TƯ
   if (isAskingAllCategories) {
     const categoriesMap: Record<string, { count: number; items: string[]; usableQty: number }> = {};
     analyzedItems.forEach(a => {
@@ -652,19 +1642,16 @@ export function generateExpertChatAnswer(
       ans += `| ${idx + 1} | **${catName}** | **${data.count}** | **${Math.round(data.usableQty * 10) / 10}** | ${examples} |\n`;
     });
 
-    ans += `\n*Gợi ý:* Bạn có thể hỏi chi tiết: *"Cho tôi danh mục văn phòng phẩm"*, *"Cho tôi danh mục thuốc"*, *"Vật tư nào đã hết hạn?"* hoặc *"Kế hoạch mua sắm bổ sung?"*`;
     return ans;
   }
 
-  // 3. KIỂM TRA HỎI VỀ DỰ TRÙ / MUA SẮM BỔ SUNG / CẦN NHẬP HÀNG (ƯU TIÊN ĐẶC BIỆT CHO HÀNG HẾT HẠN)
+  // 6. DỰ TRÙ / MUA SẮM BỔ SUNG
   if (cleanQ.includes('du tru') || cleanQ.includes('nhap hang') || cleanQ.includes('can mua') || cleanQ.includes('ke hoach nhap') || cleanQ.includes('mua sam') || cleanQ.includes('bo sung')) {
-    // Lấy các mặt hàng thiếu hụt khả dụng: usableStock <= minStock HOẶC có hàng đã hết hạn
     const deficitItems = analyzedItems.filter(a => a.isDeficit);
 
     let ans = `### 📝 Khuyến nghị Kế hoạch Dự trù & Mua sắm Bổ sung Vật tư\n\n`;
     if (deficitItems.length === 0) {
-      ans += `✅ Toàn bộ **${items.length}** mặt hàng hiện đều có số lượng tồn khả dụng an toàn trên mức tối thiểu và không có lô hàng nào quá hạn. Chưa cần lập phiếu dự trù khẩn.\n\n`;
-      ans += `*Gợi ý:* Bạn có thể rà soát lại lượng tiêu thụ tuần qua để chuẩn bị dự trù định kỳ cho tháng tới.`;
+      ans += `✅ Toàn bộ **${items.length}** mặt hàng hiện đều có số lượng tồn khả dụng an toàn trên mức tối thiểu và không có lô hàng nào quá hạn. Chưa cần lập phiếu dự trù khẩn.`;
       return ans;
     }
 
@@ -673,7 +1660,6 @@ export function generateExpertChatAnswer(
     ans += `| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |\n`;
 
     let totalEst = 0;
-    // Sắp xếp ưu tiên: Các mặt hàng hết hạn/cạn kho lên đầu bảng
     const sortedDeficit = [...deficitItems].sort((a, b) => {
       if (a.hasExpired && !b.hasExpired) return -1;
       if (!a.hasExpired && b.hasExpired) return 1;
@@ -685,13 +1671,9 @@ export function generateExpertChatAnswer(
       totalEst += est;
 
       let reason = '🟡 Chạm định mức an toàn';
-      if (a.isFullyExpired) {
-        reason = `🚨 Hết hạn 100% (${a.expiredQty} ${a.unit}) - Tồn khả dụng = 0`;
-      } else if (a.hasExpired) {
-        reason = `⚠️ Hết hạn ${a.expiredQty} ${a.unit} - Thiếu hụt an toàn`;
-      } else if (a.usableStock <= 0) {
-        reason = '🔴 Cạn kho hoàn toàn (Tồn = 0)';
-      }
+      if (a.isFullyExpired) reason = `🚨 Hết hạn 100% (${a.expiredQty} ${a.unit}) - Tồn khả dụng = 0`;
+      else if (a.hasExpired) reason = `⚠️ Hết hạn ${a.expiredQty} ${a.unit} - Thiếu hụt an toàn`;
+      else if (a.usableStock <= 0) reason = '🔴 Cạn kho hoàn toàn (Tồn = 0)';
 
       ans += `| ${idx + 1} | **${a.name}** | ${a.categoryName} | ${a.totalStock} | ${a.expiredQty > 0 ? `**${a.expiredQty}**` : '0'} | **${a.usableStock}** | ${a.minStock} | **+${a.suggestedReorder}** | ${a.unit} | ${a.price ? a.price.toLocaleString('vi-VN') + ' đ' : '0 đ'} | ${est ? est.toLocaleString('vi-VN') + ' đ' : '-'} | ${reason} |\n`;
     });
@@ -699,11 +1681,10 @@ export function generateExpertChatAnswer(
     if (totalEst > 0) {
       ans += `\n💰 **Tổng dự toán kinh phí mua sắm bổ sung:** **${totalEst.toLocaleString('vi-VN')} đ**.\n`;
     }
-    ans += `\n*Ghi chú chuyên gia:* Các mặt hàng có lượng hết hạn phải lập tức niêm phong và mua bù ngay theo số lượng đề xuất để đảm bảo đệm an toàn cho các ca trực cấp cứu.`;
     return ans;
   }
 
-  // 4. KIỂM TRA HỎI VỀ HẾT HÀNG / SẮP HẾT / ĐỊNH MỨC TỐI THIỂU - BẢNG BIỂU
+  // 7. HẾT HÀNG / SẮP HẾT / ĐỊNH MỨC TỐI THIỂU
   const isAskingOutOfStock = cleanQ.includes('het hang') || cleanQ.includes('sap het') || cleanQ.includes('can kho') || cleanQ.includes('toi thieu') || cleanQ.includes('cham dinh muc');
   if (isAskingOutOfStock) {
     const out = analyzedItems.filter(a => a.usableStock <= 0);
@@ -720,7 +1701,7 @@ export function generateExpertChatAnswer(
       });
       ans += `\n`;
     } else {
-      ans += `✅ Tuyệt vời! Hiện tại không có mặt hàng nào bị hết tồn kho khả dụng hoàn toàn.\n\n`;
+      ans += `✅ Hiện tại không có mặt hàng nào bị hết tồn kho khả dụng hoàn toàn.\n\n`;
     }
 
     if (low.length > 0) {
@@ -731,18 +1712,12 @@ export function generateExpertChatAnswer(
         ans += `| ${idx + 1} | **${a.name}** | ${a.categoryName} | **${a.usableStock}** | ${a.minStock} | ${a.unit} | **+${a.suggestedReorder} ${a.unit}** |\n`;
       });
       ans += `\n`;
-    } else {
-      ans += `✅ Tất cả các mặt hàng khác đều duy trì lượng tồn khả dụng trên mức tối thiểu an toàn.\n`;
     }
     return ans;
   }
 
-  // 5. KIỂM TRA HỎI VỀ HẠN SỬ DỤNG / QUÁ HẠN / CẬN HẠN (FEFO) - BẢNG BIỂU & ĐỀ XUẤT MUA SẮM BÙ ĐẮP
-  const isAskingExpiry = cleanQ.includes('het han') || cleanQ.includes('can han') || cleanQ.includes('qua han') || 
-    cleanQ.includes('han dung') || cleanQ.includes('han su dung') || cleanQ.includes('date') || cleanQ.includes('fefo') || 
-    /(^|\s)(han)(\s|$)/.test(cleanQ);
-
-  if (isAskingExpiry) {
+  // 8. HẠN SỬ DỤNG / QUÁ HẠN / CẬN HẠN (FEFO)
+  if (isExpiryIntent) {
     const expiredList = analyzedItems.filter(a => a.hasExpired);
     const nearingList = analyzedItems.filter(a => a.hasNearing && !a.hasExpired);
 
@@ -757,7 +1732,7 @@ export function generateExpertChatAnswer(
         const expDates = a.expiredBatches.map(b => b.expiryDate).join(', ') || a.earliestExpiryDateStr;
         ans += `| ${idx + 1} | **${a.name}** | ${a.categoryName} | ${batchNums} | **${expDates}** | **${a.expiredQty}** | **${a.usableStock}** | ${a.minStock} | **+${a.suggestedReorder}** | ${a.unit} | 🔴 Niêm phong & Mua bù khẩn |\n`;
       });
-      ans += `\n⚠️ **Cảnh báo an toàn người bệnh:** Toàn bộ **${expiredList.reduce((acc, a) => acc + a.expiredQty, 0)}** đơn vị hết hạn nói trên KHÔNG ĐƯỢC PHÉP xuất cho các ca chụp chiếu. Đã đề xuất lập phiếu mua sắm bổ sung thay thế ở cột trên.\n\n`;
+      ans += `\n`;
     } else {
       ans += `✅ Hiện tại **không phát hiện lô hàng nào bị quá hạn sử dụng** trong kho.\n\n`;
     }
@@ -780,118 +1755,83 @@ export function generateExpertChatAnswer(
     return ans;
   }
 
-  // 6. KIỂM TRA HỎI VỀ TIÊU HAO / XUẤT KHO / PHÒNG MÁY (Phải KHÔNG chứa "văn phòng")
-  const isDeptOrConsumption = 
-    (cleanQ.includes('tieu hao') || cleanQ.includes('xuat kho') || cleanQ.includes('phong may') || cleanQ.includes('phong ban') || 
-     (cleanQ.includes('phong') && !cleanQ.includes('van phong')));
+  // 9. DỰ BÁO NGÀY HẾT CHUNG TOÀN KHO
+  if (isForecastIntent) {
+    const itemsWithConsumption = analyzedItems
+      .map(a => ({ a, c: computeItemConsumptionAndDepletion(a, transactions, holidays, now) }))
+      .filter(x => x.c.primaryDailyUsage > 0)
+      .sort((x, y) => (x.c.primaryWorkingDaysRemaining ?? 9999) - (y.c.primaryWorkingDaysRemaining ?? 9999))
+      .slice(0, 12);
+
+    let ans = `### ⏳ Dự báo Ngày Hết các Vật tư Đang Tiêu Hao Nhanh Nhất\n\n`;
+    if (itemsWithConsumption.length === 0) {
+      ans += `Chưa có dữ liệu xuất kho (${transactions.length} giao dịch) để tính tốc độ tiêu hao hàng ngày.`;
+      return ans;
+    }
+    ans += `| STT | Tên vật tư | Tồn khả dụng | Tiêu hao/ngày lv | Còn lại (ngày lv) | Ngày hết dự kiến |\n`;
+    ans += `| :---: | :--- | :---: | :---: | :---: | :---: |\n`;
+    itemsWithConsumption.forEach(({ a, c }, idx) => {
+      ans += `| ${idx + 1} | **${a.name}** | **${a.usableStock} ${a.unit}** | ${c.primaryDailyUsage} ${a.unit}/ngày | ${c.primaryWorkingDaysRemaining !== null ? `**${c.primaryWorkingDaysRemaining} ngày**` : 'N/A'} | **${c.primaryDepletionDateStr}** |\n`;
+    });
+    return ans;
+  }
+
+  // 10. TIÊU HAO / XUẤT KHO / PHÒNG MÁY (Hỗ trợ lọc theo từng phòng cụ thể như Phòng CLVT, X-quang, Siêu âm)
+  const deptKeywords = ['clvt', 'ct', 'mri', 'cht', 'sieu am', 'x quang', 'xquang', 'dsa', 'noi soi'];
+  const matchedDeptKeyword = deptKeywords.find(kw => cleanQ.includes(kw));
+  const isDeptOrConsumption =
+    Boolean(matchedDeptKeyword) ||
+    cleanQ.includes('tieu hao') || cleanQ.includes('xuat kho') || cleanQ.includes('phong may') ||
+    cleanQ.includes('phong ban') || (cleanQ.includes('phong') && !cleanQ.includes('van phong'));
 
   if (isDeptOrConsumption) {
-    const outTx = transactions.filter(t => t.type === 'OUT');
-    const deptTotals: Record<string, number> = {};
-    const itemTotals: Record<string, { name: string; qty: number; unit: string }> = {};
+    const res = executeInventoryTool(
+      'analyzeTransactionsAndDepartments',
+      { type: 'OUT', days: 365, department: matchedDeptKeyword || '' },
+      items,
+      transactions,
+      holidays,
+      categories
+    );
 
-    outTx.forEach(t => {
-      const dept = t.department || 'Chung / Khác';
-      deptTotals[dept] = (deptTotals[dept] || 0) + Number(t.quantity || 0);
+    let ans = matchedDeptKeyword
+      ? `### 📊 Thống kê Tiêu hao theo Khu vực / Phòng máy khớp "${matchedDeptKeyword.toUpperCase()}"\n\n`
+      : `### 📊 Thống kê Tiêu hao & Xuất kho Gần đây\n\n`;
 
-      const matched = items.find(i => i.id === t.itemId || i.name === t.itemName);
-      const realName = matched?.name || t.itemName || 'Vật tư tiêu hao';
-      const realUnit = matched?.unit || t.unit || 'đơn vị';
-      const key = matched?.id || realName;
-
-      if (!itemTotals[key]) {
-        itemTotals[key] = { name: realName, qty: 0, unit: realUnit };
-      }
-      itemTotals[key].qty += Number(t.quantity || 0);
-    });
-
-    const topItems = Object.values(itemTotals).sort((a, b) => b.qty - a.qty).slice(0, 5);
-
-    let ans = `### 📊 Thống kê Tiêu hao & Xuất kho Gần đây\n\n`;
-    if (topItems.length > 0) {
+    if (res.topItems.length > 0) {
       ans += `**Top vật tư được xuất sử dụng nhiều nhất:**\n\n`;
-      ans += `| STT | Tên vật tư | Tổng số lượng xuất | Đơn vị | Mức độ tiêu thụ |\n`;
+      ans += `| STT | Tên vật tư | Tổng số lượng xuất | Đơn vị | Số lần xuất |\n`;
       ans += `| :---: | :--- | :---: | :---: | :---: |\n`;
-      topItems.forEach((it, idx) => {
-        const rounded = Math.round(it.qty * 10) / 10;
-        ans += `| ${idx + 1} | **${it.name}** | **${rounded}** | ${it.unit} | 🔥 Cao |\n`;
+      res.topItems.slice(0, 8).forEach((it: any, idx: number) => {
+        ans += `| ${idx + 1} | **${it.name}** | **${it.totalQty}** | ${it.unit} | ${it.txCount} lần |\n`;
       });
       ans += `\n`;
     } else {
-      ans += `- Chưa ghi nhận lịch sử xuất kho gần đây.\n\n`;
+      ans += `- Chưa ghi nhận lịch sử xuất kho phù hợp trong 365 ngày qua.\n\n`;
     }
 
-    const depts = Object.entries(deptTotals);
+    const depts = Object.entries(res.departmentBreakdown as Record<string, number>).sort((a, b) => b[1] - a[1]);
     if (depts.length > 0) {
       ans += `**Phân bổ vật tư theo các phòng ban / phòng máy:**\n\n`;
       ans += `| STT | Phòng ban / Modality | Tổng số lượng cấp | Đơn vị |\n`;
       ans += `| :---: | :--- | :---: | :---: |\n`;
-      depts.forEach(([d, q], idx) => {
-        const rounded = Math.round(q * 10) / 10;
-        ans += `| ${idx + 1} | **Phòng ${d}** | **${rounded}** | đơn vị |\n`;
+      depts.forEach(([d, qVal], idx) => {
+        ans += `| ${idx + 1} | **${d}** | **${qVal}** | đơn vị |\n`;
       });
       ans += `\n`;
-    } else {
-      ans += `- Chưa có dữ liệu phân bổ phòng ban.\n`;
     }
     return ans;
   }
 
-  // 7. TRA CỨU MỘT VẬT TƯ CỤ THỂ THEO TÊN
-  const matchedAnalysis = analyzedItems.find(a => {
-    const nameClean = removeVietnameseTones(a.name);
-    return nameClean && (cleanQ.includes(nameClean) || nameClean.split(' ').filter(w => w.length > 2).some(w => cleanQ.includes(w)));
-  });
-
-  if (matchedAnalysis) {
-    let statusText = '🟢 An toàn';
-    if (matchedAnalysis.isFullyExpired) statusText = '🔴 Toàn bộ đã hết hạn (Tồn khả dụng = 0)';
-    else if (matchedAnalysis.hasExpired) statusText = `⚠️ Hết hạn ${matchedAnalysis.expiredQty} ${matchedAnalysis.unit}`;
-    else if (matchedAnalysis.usableStock <= 0) statusText = '🔴 Cạn kho hoàn toàn';
-    else if (matchedAnalysis.usableStock <= matchedAnalysis.minStock) statusText = '🟡 Cảnh báo (Dưới định mức tối thiểu)';
-
-    let ans = `### 🔍 Thông tin chi tiết vật tư: **${matchedAnalysis.name}**\n\n`;
-    ans += `| Thuộc tính | Giá trị |\n`;
-    ans += `| :--- | :--- |\n`;
-    ans += `| **Nhóm phân loại** | ${matchedAnalysis.categoryName} |\n`;
-    ans += `| **Tồn kho sổ sách** | ${matchedAnalysis.totalStock} ${matchedAnalysis.unit} |\n`;
-    ans += `| **Lượng hàng đã hết hạn** | **${matchedAnalysis.expiredQty} ${matchedAnalysis.unit}** |\n`;
-    ans += `| **Tồn khả dụng an toàn (dùng cho BN)** | **${matchedAnalysis.usableStock} ${matchedAnalysis.unit}** |\n`;
-    ans += `| **Định mức tồn tối thiểu** | ${matchedAnalysis.minStock} ${matchedAnalysis.unit} |\n`;
-    ans += `| **Đơn giá** | ${matchedAnalysis.price.toLocaleString('vi-VN')} đ |\n`;
-    ans += `| **Trạng thái kho** | ${statusText} |\n`;
-    if (matchedAnalysis.isDeficit) {
-      ans += `| **Đề xuất mua sắm bổ sung** | **+${matchedAnalysis.suggestedReorder} ${matchedAnalysis.unit}** |\n`;
-    }
-    ans += `\n`;
-
-    const allBatches = [...matchedAnalysis.expiredBatches, ...matchedAnalysis.nearingBatches, ...matchedAnalysis.validBatches];
-    if (allBatches.length > 0) {
-      ans += `**Chi tiết các lô hàng đang lưu kho:**\n\n`;
-      ans += `| STT | Số lô | Số lượng | Đơn vị | Hạn sử dụng | Trạng thái lô |\n`;
-      ans += `| :---: | :---: | :---: | :---: | :---: | :---: |\n`;
-      allBatches.forEach((b, idx) => {
-        let bStatus = '🟢 Còn hạn';
-        if (b.isExpired) bStatus = '🔴 ĐÃ QUÁ HẠN';
-        else if (b.isNearing) bStatus = `🟡 Cận hạn (còn ${b.daysLeft} ngày)`;
-
-        ans += `| ${idx + 1} | \`${b.batchNumber}\` | **${b.quantity}** | ${matchedAnalysis.unit} | ${b.expiryDate || 'Không có hạn'} | ${bStatus} |\n`;
-      });
-      ans += `\n`;
-    }
-
-    return ans;
-  }
-
-  // 8. TRẢ LỜI MẶC ĐỊNH
+  // 11. TRẢ LỜI MẶC ĐỊNH
   return `### 💡 Trợ lý AI Khoa Chẩn đoán Hình ảnh\n\n` +
-    `Hiện tại hệ thống đang quản lý **${items.length}** danh mục vật tư với **${transactions.length}** giao dịch ghi nhận gần đây.\n\n` +
-    `Bạn có thể hỏi tôi các câu hỏi cụ thể như:\n` +
-    `- *"Vật tư nào đã hết hạn và cần mua sắm bổ sung?"*\n` +
-    `- *"Đề xuất kế hoạch dự trù mua sắm bổ sung vật tư"* \n` +
-    `- *"Cho tôi danh mục văn phòng phẩm hiện có"*\n` +
-    `- *"Cho tôi danh mục thuốc & dược"* \n` +
-    `- *"Vật tư nào đã hết hàng hoặc cạn kho khả dụng?"*\n` +
-    `- *"Có lô hàng nào quá hạn hoặc cận hạn dưới 60 ngày không?"*\n` +
-    `- *"Phòng ban nào tiêu hao nhiều nhất gần đây?"*`;
+    `Tôi chưa tìm thấy vật tư hoặc chủ đề khớp rõ ràng với câu hỏi của bạn (hiện hệ thống đang quản lý **${items.length}** vật tư và **${transactions.length}** giao dịch).\n\n` +
+    `Bạn có thể thử các câu hỏi tự nhiên như:\n` +
+    `- *"Ước tính ngày hết của Phim X-quang 8x10"*\n` +
+    `- *"Dự trù Phim X-quang 10x8 cho 30 ngày tới với dự phòng 20%"*\n` +
+    `- *"So sánh Phim X-quang 10x8 và 10x12"*\n` +
+    `- *"Tổng giá trị tồn kho hiện tại là bao nhiêu?"*\n` +
+    `- *"Phòng CLVT tiêu hao những vật tư nào?"*\n` +
+    `- *"Vật tư nào đã hết hạn và cần mua sắm bổ sung?"*`;
 }
+

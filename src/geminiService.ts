@@ -25,7 +25,7 @@ export async function analyzeInventory(
       categories = categoriesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
       const transactionsSnapshot = await getDocs(
-        query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(50))
+        query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(500))
       );
       transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
 
@@ -97,7 +97,7 @@ export async function askAiAssistant(
       items = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
       const transactionsSnapshot = await getDocs(
-        query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(40))
+        query(collection(db, "transactions"), orderBy("timestamp", "desc"), limit(500))
       );
       transactions = transactionsSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, any>) }));
 
@@ -130,6 +130,7 @@ export async function askAiAssistant(
         history,
         items,
         transactions,
+        holidays,
         categories: cachedData?.categories || [],
       }),
     });
@@ -144,5 +145,5 @@ export async function askAiAssistant(
     // Offline fallback
   }
 
-  return generateExpertChatAnswer(question, items, transactions, holidays, cachedData?.categories);
+  return generateExpertChatAnswer(question, items, transactions, holidays, cachedData?.categories, history);
 }

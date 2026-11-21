@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, type FunctionDeclaration } from '@google/genai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,7 +10,12 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { generateExpertInventoryAnalysis, generateExpertChatAnswer, computeItemStockAndExpiry } from './src/expertAnalysis.js';
+import {
+  generateExpertInventoryAnalysis,
+  generateExpertChatAnswer,
+  buildInventoryAnalyticsContext,
+  executeInventoryTool,
+} from './src/expertAnalysis.js';
 
 
 async function startServer() {
@@ -127,13 +132,13 @@ async function startServer() {
       },
     };
 
-    // Model fallback chain: Try primary gemini-3.8-flash, then fallback to gemini-flash-latest with 8s timeout
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
+    // Model fallback chain: Use active Gemini 4 models
+    const modelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
     for (const modelName of modelsToTry) {
       try {
         const timeoutPromise = new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error('TIMEOUT_AFTER_8S')), 8000)
+          setTimeout(() => reject(new Error('TIMEOUT_AFTER_25S')), 25000)
         );
 
         const apiPromise = ai.models.generateContent({
@@ -157,10 +162,107 @@ async function startServer() {
     }
 
     // If cloud models unavailable or API key invalid, serve guaranteed expert inventory analysis
-    return res.json(generateExpertInventoryAnalysis(items, transactions, holidays));
+    return res.json(generateExpertInventoryAnalysis(items, transactions, holidays, categories));
   });
 
-  // API Route: Interactive Q&A Warehouse Copilot with Gemini AI (Grounded in Inventory Database)
+  const INVENTORY_TOOLS: FunctionDeclaration[] = [
+    {
+      name: 'searchInventoryItems',
+      description:
+        'Tìm kiếm và tra cứu chi tiết tồn kho, tồn khả dụng an toàn, hạn sử dụng từng lô hàng và tốc độ tiêu hao của một hoặc nhiều vật tư theo tên, kích thước (tự hiểu 8x10 <-> 10x8) hoặc nhóm danh mục.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          query: {
+            type: Type.STRING,
+            description: 'Tên, kích thước hoặc từ khóa vật tư cần tra cứu (ví dụ: "phim x quang 8x10", "barit", "omnipaque"). Để trống nếu lọc theo danh mục.',
+          },
+          categoryFilter: {
+            type: Type.STRING,
+            description: 'Tên nhóm vật tư tùy chọn để lọc (ví dụ: "Văn phòng phẩm", "Dược", "Vật tư tiêu hao", "Hóa chất").',
+          },
+        },
+      },
+    },
+    {
+      name: 'forecastItemDepletion',
+      description:
+        'Dự báo ngày hết dự kiến theo ngày làm việc thực tế (đã trừ ngày nghỉ lễ), so sánh 4 chu kỳ (30 ngày, 90 ngày, YTD, 365 ngày) và tính toán kế hoạch dự trù nhập kho theo số ngày tới + tỷ lệ % dự phòng.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          itemQuery: {
+            type: Type.STRING,
+            description: 'Tên hoặc kích thước vật tư cần dự báo / tính dự trù.',
+          },
+          horizonDays: {
+            type: Type.INTEGER,
+            description: 'Số ngày dự trù trong tương lai (mặc định 30).',
+          },
+          safetyPercent: {
+            type: Type.NUMBER,
+            description: 'Tỷ lệ % dự phòng an toàn cộng thêm (ví dụ 20 cho 20%, mặc định 0).',
+          },
+          referenceWindow: {
+            type: Type.STRING,
+            description: 'Chu kỳ tham chiếu tốc độ tiêu hao: "30d", "90d", "ytd", hoặc "365d".',
+          },
+        },
+        required: ['itemQuery'],
+      },
+    },
+    {
+      name: 'analyzeTransactionsAndDepartments',
+      description:
+        'Thống kê chi tiết lịch sử xuất/nhập kho, mức tiêu hao theo từng phòng ban/máy CĐHA (Phòng CLVT/CT, X-quang, MRI/CHT, Siêu âm, DSA) và top vật tư xuất nhiều nhất.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          itemQuery: {
+            type: Type.STRING,
+            description: 'Lọc theo tên vật tư cụ thể (tùy chọn).',
+          },
+          department: {
+            type: Type.STRING,
+            description: 'Tên phòng ban / modality (ví dụ: "clvt", "x quang", "mri", "sieu am").',
+          },
+          type: {
+            type: Type.STRING,
+            description: 'Loại giao dịch: "OUT" (xuất kho), "IN" (nhập kho), hoặc "ALL". Mặc định "OUT".',
+          },
+          days: {
+            type: Type.INTEGER,
+            description: 'Số ngày gần nhất cần thống kê (mặc định 90, tối đa 730).',
+          },
+        },
+      },
+    },
+    {
+      name: 'checkExpiryAndFefo',
+      description:
+        'Rà soát toàn bộ lô hàng đã quá hạn sử dụng cần niêm phong/mua bù và các lô hàng cận hạn cần ưu tiên xuất trước theo nguyên tắc FEFO.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          nearingDays: {
+            type: Type.INTEGER,
+            description: 'Ngưỡng số ngày cận hạn cần kiểm tra (mặc định 60).',
+          },
+        },
+      },
+    },
+    {
+      name: 'computeInventoryValuation',
+      description:
+        'Tính tổng giá trị tài sản tồn kho hiện tại bằng VNĐ: tổng giá trị sổ sách, giá trị tồn khả dụng an toàn, giá trị tổn thất do hàng quá hạn và phân bổ theo từng nhóm vật tư.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {},
+      },
+    },
+  ];
+
+  // API Route: Interactive Q&A Warehouse Copilot with Gemini AI (Function Calling + Grounded DB)
   app.post('/api/gemini/chat', async (req, res) => {
     const { question = '', history = [], items = [], transactions = [], holidays = [], categories = [] } = req.body;
 
@@ -170,125 +272,135 @@ async function startServer() {
 
     const ai = getGeminiClient();
     if (!ai) {
-      const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays, categories);
-      return res.json({ text: fallbackText });
+      const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays, categories, history);
+      return res.json({ text: fallbackText, engine: 'expert' });
     }
 
-    // Build compact context of inventory database with clinical stock analysis (Usable vs Expired)
-    const now = new Date();
-    const sixtyDaysLater = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
-
-    const inventoryOverview = items.map(i => {
-      const stock = computeItemStockAndExpiry(i, now, sixtyDaysLater, categories);
-      return {
-        name: stock.name,
-        category: stock.categoryName,
-        totalStock: stock.totalStock,
-        usableStock: stock.usableStock,
-        expiredQty: stock.expiredQty,
-        nearingQty: stock.nearingQty,
-        minStock: stock.minStock,
-        unit: stock.unit,
-        price: stock.price,
-        hasExpired: stock.hasExpired,
-        isFullyExpired: stock.isFullyExpired,
-        suggestedPurchaseQty: stock.suggestedReorder,
-        batches: [...stock.expiredBatches, ...stock.nearingBatches, ...stock.validBatches].map(b => ({
-          batchNumber: b.batchNumber,
-          expiryDate: b.expiryDate,
-          quantity: b.quantity,
-          isExpired: b.isExpired,
-        })),
-        expiryDate: i.expiryDate,
-      };
-    });
-
-    const recentTx = transactions.slice(0, 30).map(t => ({
-      type: t.type,
-      itemName: t.itemName,
-      quantity: t.quantity,
-      department: t.department,
-      date: t.date || t.timestamp,
+    // Compact warehouse index so Gemini knows exact item names & high-level overview before invoking tools
+    const analyticsContext = buildInventoryAnalyticsContext(items, transactions, holidays, categories);
+    const compactDirectory = analyticsContext.items.map(i => ({
+      name: i.name,
+      category: i.category,
+      unit: i.unit,
+      usableStock: i.usableStock,
+      minStock: i.minStock,
+      hasExpired: i.hasExpired,
     }));
 
     const systemInstruction = `
 Bạn là Trợ lý AI Chuyên gia Quản lý Kho Dược & Vật tư Y tế của Khoa Chẩn đoán Hình ảnh (CĐHA).
-Nhiệm vụ cốt lõi:
-1. Dựa trên dữ liệu kho thực tế được cung cấp dưới đây, hãy trả lời chính xác, trung thực các câu hỏi của nhân viên và bác sĩ.
-2. Tra cứu danh mục, nhóm vật tư (Văn phòng phẩm, Dược, Vật tư tiêu hao, Hóa chất & cản quang):
-   - ĐẶC BIỆT CHÚ Ý: Khi người dùng yêu cầu xem danh sách, danh mục, bảng kê, so sánh, hoặc tổng hợp: BẮT BUỘC TRÌNH BÀY BẰNG ĐỊNH DẠNG BẢNG MARKDOWN (Markdown Table) chuẩn GitHub-Flavored Markdown với dòng tiêu đề và phân cách cột chuẩn xác.
-   - Luôn chừa dòng trống trước và sau bảng markdown để giao diện kết xuất bảng HTML trực quan, dễ quan sát.
-   - Tuyệt đối phân loại đúng nhóm: Thuốc (Pdsolone, Vinsolon, NaCl, v.v.) thuộc nhóm Dược; Túi phim, dây nối thuộc Vật tư tiêu hao; Giấy in, bút, ghim, v.v. thuộc Văn phòng phẩm. Không bao giờ xếp thuốc hoặc túi phim vào nhóm văn phòng phẩm!
-3. NGUYÊN TẮC Y TẾ BẮT BUỘC VỀ HẠN DÙNG & ĐỀ XUẤT MUA SẮM BỔ SUNG:
-   - Trong y tế, mọi lô hàng đã quá hạn sử dụng (hạn dùng trước ngày hiện tại) TUYỆT ĐỐI KHÔNG ĐƯỢC PHÉP DÙNG CHO BỆNH NHÂN và phải lập tức niêm phong.
-   - Tồn khả dụng an toàn = Tồn sổ sách - Lượng hàng đã hết hạn.
-   - Khi một mặt hàng có hàng hết hạn (ví dụ Barit sulfat có 73 gói nhưng toàn bộ 73 gói đã hết hạn ngày 15/09/2026 nên tồn khả dụng an toàn = 0):
-     * BẮT BUỘC PHẢI CẢNH BÁO NGUY HIỂM VỀ LÔ HÀNG ĐÃ QUÁ HẠN.
-     * BẮT BUỘC PHẢI ĐƯA NGAY VÀO DANH SÁCH ĐỀ XUẤT MUA SẮM BỔ SUNG KHẨN CẤP với số lượng cụ thể (bù lại lượng hết hạn + duy trì đệm an toàn dự phòng) để không làm gián đoạn ca chụp cản quang hay khám chữa bệnh!
-4. Tra cứu hạn dùng lô (FEFO), định mức tối thiểu:
-   - Trình bày dạng bảng chi tiết các lô hàng, số lô, hạn dùng, lượng hết hạn, tồn khả dụng, và số lượng đề xuất mua sắm bù đắp.
-5. Dự trù và tiêu hao:
-   - Trình bày bảng chi tiết số lượng đề xuất nhập, đơn giá, ước tính chi phí và lý do cụ thể (Bù hàng hết hạn / Chạm định mức).
-6. Phong cách:
-   - Chuẩn văn phong y tế, mạch lạc, dễ quan sát, trực quan bằng bảng số liệu.
-   - KHÔNG bịa đặt số liệu (Zero Hallucination). Nếu vật tư không tồn tại trong danh mục, hãy nêu rõ ràng.
+Ngày hiện tại trên hệ thống: ${analyticsContext.todayStr} (đã cấu hình ${analyticsContext.holidaysRecordedCount} ngày nghỉ lễ/nghỉ trực, quản lý ${analyticsContext.totalItemsCount} mặt hàng và ${analyticsContext.totalTransactionsCount} giao dịch).
+
+NGUYÊN TẮC BẮT BUỘC KHI PHÂN TÍCH & TRẢ LỜI:
+1. SỬ DỤNG CÔNG CỤ TRUY VẤN DỮ LIỆU CHÍNH XÁC (FUNCTION CALLING):
+   - LUÔN gọi đúng công cụ (tool) phù hợp để lấy số liệu tính toán chính xác trước khi trả lời câu hỏi về vật tư, ngày hết, dự trù, phòng ban, hạn dùng hay giá trị kho.
+   - Khi người dùng hỏi dự báo / ước tính ngày hết / dự trù số ngày tới + % dự phòng: gọi \`forecastItemDepletion\`.
+   - Khi người dùng hỏi so sánh các vật tư hoặc hỏi thông số chi tiết: gọi \`searchInventoryItems\` (hoặc \`forecastItemDepletion\`).
+   - Khi hỏi tiêu hao theo phòng máy (Phòng CLVT/CT, X-quang, MRI/CHT, Siêu âm) hoặc lịch sử nhập/xuất: gọi \`analyzeTransactionsAndDepartments\`.
+   - Khi hỏi lô quá hạn / cận hạn FEFO: gọi \`checkExpiryAndFefo\`.
+   - Khi hỏi tổng giá trị kho / tiền hàng: gọi \`computeInventoryValuation\`.
+2. ĐỐI CHIẾU TÊN & QUY ĐỔI KÍCH CỠ:
+   - Tự hiểu kích thước đảo chiều (8x10 <-> 10x8) và viết tắt ngành (XQ = X-quang, CLVT = CT, CHT = MRI, VPP = Văn phòng phẩm).
+   - Danh mục tóm tắt hiện có: ${JSON.stringify(compactDirectory)}
+3. ĐỊNH DẠNG CHUYÊN NGHIỆP & ZERO HALLUCINATION:
+   - Trả lời thẳng trọng tâm câu hỏi bằng tiếng Việt, trình bày số liệu chi tiết bằng Bảng Markdown chuẩn GFM (có dòng trống trước và sau bảng).
+   - Phân biệt rõ Tồn sổ sách vs. Tồn khả dụng an toàn (đã trừ hàng hết hạn). Tuyệt đối không bịa đặt số liệu ngoài kết quả từ các tool.
 `;
 
-    const prompt = `
-DỮ LIỆU KHO HIỆN TẠI (TỔNG CỘNG ${items.length} MẶT HÀNG):
-${JSON.stringify(inventoryOverview, null, 2)}
+    // Build structured conversation history + new user message
+    const baseContents: any[] = [];
+    if (Array.isArray(history)) {
+      for (const h of history.slice(-8)) {
+        if (h?.text && (h.role === 'user' || h.role === 'model')) {
+          baseContents.push({
+            role: h.role,
+            parts: [{ text: String(h.text) }],
+          });
+        }
+      }
+    }
+    baseContents.push({
+      role: 'user',
+      parts: [{ text: question }],
+    });
 
-GIAO DỊCH GẦN ĐÂY (${recentTx.length} GIAO DỊCH):
-${JSON.stringify(recentTx, null, 2)}
-
-DANH SÁCH NGÀY NGHỈ ĐÃ GHI NHẬN:
-${JSON.stringify(holidays, null, 2)}
-
-LỊCH SỬ TRAO ĐỔI TRƯỚC ĐÓ:
-${history.map((h: any) => `${h.role === 'user' ? 'Người dùng' : 'Trợ lý AI'}: ${h.text}`).join('\n')}
-
-CÂU HỎI MỚI CỦA NGƯỜI DÙNG:
-${question}
-`;
-
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
+    const modelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
     for (const modelName of modelsToTry) {
       try {
-        const timeoutPromise = new Promise<null>((_, reject) =>
-          setTimeout(() => reject(new Error('TIMEOUT_AFTER_6S')), 6000)
-        );
+        const conversation = [...baseContents];
+        const MAX_TOOL_ROUNDS = 4;
 
-        const apiPromise = ai.models.generateContent({
-          model: modelName,
-          contents: prompt,
-          config: {
-            systemInstruction,
-          },
-        });
+        for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+          const timeoutPromise = new Promise<null>((_, reject) =>
+            setTimeout(() => reject(new Error('TIMEOUT_AFTER_25S')), 25000)
+          );
 
-        const response: any = await Promise.race([apiPromise, timeoutPromise]);
+          const apiPromise = ai.models.generateContent({
+            model: modelName,
+            contents: conversation,
+            config: {
+              systemInstruction,
+              tools: [{ functionDeclarations: INVENTORY_TOOLS }],
+            },
+          });
 
-        if (response && response.text) {
-          return res.json({ text: response.text });
+          const response: any = await Promise.race([apiPromise, timeoutPromise]);
+
+          if (response?.functionCalls && response.functionCalls.length > 0 && round < MAX_TOOL_ROUNDS) {
+            const modelContent = response.candidates?.[0]?.content || {
+              role: 'model',
+              parts: response.functionCalls.map((fc: any) => ({ functionCall: fc })),
+            };
+            conversation.push(modelContent);
+
+            const functionResponseParts = response.functionCalls.map((call: any) => {
+              const result = executeInventoryTool(
+                call.name,
+                (call.args as Record<string, any>) || {},
+                items,
+                transactions,
+                holidays,
+                categories
+              );
+              return {
+                functionResponse: {
+                  id: call.id,
+                  name: call.name,
+                  response: { result },
+                },
+              };
+            });
+
+            conversation.push({
+              role: 'user',
+              parts: functionResponseParts,
+            });
+            continue;
+          }
+
+          if (response && response.text) {
+            return res.json({ text: response.text, engine: 'gemini' });
+          }
+          break;
         }
       } catch (err: any) {
         const errStr = String(err?.message || err || '');
         if (errStr.includes('API_KEY_INVALID') || errStr.includes('API key not valid') || errStr.includes('PERMISSION_DENIED')) {
-          break; // Stop retrying other models with an invalid key
+          break;
         }
       }
     }
 
     // Fallback if cloud API is busy or API key is not active
-    const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays, categories);
-    return res.json({ text: fallbackText });
+    const fallbackText = generateExpertChatAnswer(question, items, transactions, holidays, categories, history);
+    return res.json({ text: fallbackText, engine: 'expert' });
   });
 
   // API Route: General Gemini generate content
   app.post('/api/gemini/generate', async (req, res) => {
     try {
-      const { prompt, model = 'gemini-3.8-flash' } = req.body;
+      const { prompt, model = 'gemini-4-hydrogen' } = req.body;
       const ai = getGeminiClient();
       if (!ai) {
         return res.status(400).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
