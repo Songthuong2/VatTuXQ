@@ -74,7 +74,6 @@ import {
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
-  signInWithRedirect,
   getRedirectResult,
   GoogleAuthProvider, 
   signOut,
@@ -637,6 +636,10 @@ export default function App() {
   const [loginErrorType, setLoginErrorType] = useState<null | 'popup-blocked' | 'unauthorized-domain' | 'generic'>(null);
   const [loginErrorMessage, setLoginErrorMessage] = useState<string>('');
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+  const isStandalonePWA = typeof window !== 'undefined' && (
+    window.matchMedia?.('(display-mode: standalone)')?.matches ||
+    (window.navigator as any)?.standalone === true
+  );
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<'medical' | 'light' | 'dark'>(() => {
@@ -769,34 +772,18 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
+    sessionStorage.removeItem('g_auth_redirect_pending');
     getRedirectResult(auth)
       .then((result) => {
         if (!mounted) return;
-        const wasRedirectPending = sessionStorage.getItem('g_auth_redirect_pending') === '1';
         if (result?.user) {
-          sessionStorage.removeItem('g_auth_redirect_pending');
           setUser(result.user);
           setLoginErrorType(null);
           setLoginErrorMessage('');
-        } else if (wasRedirectPending && !auth.currentUser) {
-          sessionStorage.removeItem('g_auth_redirect_pending');
-          setLoginErrorType('popup-blocked');
-          setLoginErrorMessage(
-            'Trình duyệt đã chuyển hướng về nhưng chặn lưu phiên đăng nhập (do chặn cookie bên thứ ba). Vui lòng dùng nút "Đăng nhập với Google" (cho phép Popup) hoặc tắt chế độ chặn cookie bên thứ ba.'
-          );
         }
       })
-      .catch((err: any) => {
-        if (!mounted) return;
-        sessionStorage.removeItem('g_auth_redirect_pending');
-        console.error('Redirect Login Error:', err);
-        if (err?.code === 'auth/unauthorized-domain') {
-          setLoginErrorType('unauthorized-domain');
-          setLoginErrorMessage(`Tên miền "${window.location.hostname}" chưa được cấp quyền đăng nhập Firebase Auth.`);
-        } else {
-          setLoginErrorType('generic');
-          setLoginErrorMessage(err?.message || 'Không thể hoàn tất đăng nhập chuyển hướng.');
-        }
+      .catch(() => {
+        // Ignore stale redirect state; primary sign-in uses signInWithPopup
       });
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -859,26 +846,6 @@ export default function App() {
       handleFirestoreError(error, OperationType.DELETE, "bulk-reset");
     } finally {
       setIsResetting(false);
-    }
-  };
-
-  const handleRedirectLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    setLoginErrorType(null);
-    setLoginErrorMessage('');
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
-    try {
-      sessionStorage.setItem('g_auth_redirect_pending', '1');
-      await signInWithRedirect(auth, provider);
-    } catch (err: any) {
-      sessionStorage.removeItem('g_auth_redirect_pending');
-      console.error('Redirect Auth Error:', err);
-      setIsLoggingIn(false);
-      setLoginErrorType('generic');
-      setLoginErrorMessage(err?.message || 'Không thể chuyển hướng đăng nhập Google.');
-      toast.error('Lỗi đăng nhập chuyển hướng: ' + (err?.message || 'Đã có lỗi xảy ra.'));
     }
   };
 
@@ -1159,17 +1126,18 @@ export default function App() {
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-bold text-sm mb-1">Không thể hoàn tất cửa sổ đăng nhập</p>
+                    <p className="font-bold text-sm mb-1">Trình duyệt đang chặn cửa sổ bật lên (Popup)</p>
                     <p className="opacity-90 leading-relaxed">{loginErrorMessage}</p>
                   </div>
                 </div>
 
-                <ol className="list-decimal list-inside space-y-1 opacity-90 pl-1">
-                  <li>Nhấn biểu tượng <strong>cửa sổ bị chặn</strong> (hoặc biểu tượng con mắt chặn cookie) ở góc phải thanh địa chỉ trình duyệt.</li>
-                  <li>Chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong> cho trang này rồi nhấn <strong>Đăng nhập với Google</strong> lại.</li>
+                <ol className="list-decimal list-inside space-y-1.5 opacity-95 pl-1 leading-relaxed">
+                  <li>Nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> ở góc phải thanh địa chỉ và chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong>.</li>
+                  <li>Nếu đang dùng trình duyệt <strong>Cốc Cốc / Chrome / Edge</strong>: hãy tạm tắt <strong>Chặn quảng cáo / Chặn theo dõi</strong> cho trang này để cửa sổ Google không bị chặn sau khi xác nhận.</li>
+                  <li>Sau đó nhấn nút <strong>Đăng nhập với Google</strong> (hoặc <strong>Thử đăng nhập lại</strong>) bên dưới.</li>
                 </ol>
 
-                {isInIframe ? (
+                {(isInIframe || isStandalonePWA) ? (
                   <a
                     href={typeof window !== 'undefined' ? window.location.href : '#'}
                     target="_blank"
@@ -1177,17 +1145,17 @@ export default function App() {
                     className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold flex items-center justify-center gap-2 transition-colors"
                   >
                     <ExternalLink className="w-4 h-4 shrink-0" />
-                    <span>Mở ứng dụng ở tab mới để đăng nhập</span>
+                    <span>{isStandalonePWA ? 'Mở bằng trình duyệt web để đăng nhập' : 'Mở ứng dụng ở tab mới để đăng nhập'}</span>
                   </a>
                 ) : (
                   <button
                     type="button"
-                    onClick={handleRedirectLogin}
+                    onClick={handleLogin}
                     disabled={isLoggingIn}
                     className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-4 h-4 shrink-0" />
-                    <span>Thử đăng nhập chuyển hướng (Không cần Popup)</span>
+                    <span>Thử đăng nhập lại</span>
                   </button>
                 )}
               </div>
