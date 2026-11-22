@@ -11,7 +11,6 @@ export const db =
     : getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 auth.languageCode = 'vi';
-export const GOOGLE_OAUTH_CLIENT_ID = firebaseConfig.oAuthClientId || '';
 
 async function testConnection() {
   try {

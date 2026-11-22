@@ -68,14 +68,12 @@ import {
 } from './googleSheetsService';
 import { 
   auth, 
-  db,
-  GOOGLE_OAUTH_CLIENT_ID 
+  db 
 } from './firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
   signInWithRedirect,
-  signInWithCredential,
   getRedirectResult,
   GoogleAuthProvider, 
   signOut,
@@ -635,8 +633,6 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [gisReady, setGisReady] = useState(false);
-  const googleButtonRef = useRef<HTMLDivElement>(null);
   const redirectCheckedRef = useRef(false);
   const [loginIssue, setLoginIssue] = useState<{
     type: 'popup-blocked' | 'redirect-failed' | 'unauthorized-domain' | 'popup-closed' | 'other';
@@ -877,104 +873,6 @@ export default function App() {
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
 
-  // Initialize Google Identity Services (FedCM One Tap + Official Button) so sign-in works without 3rd-party cookies
-  useEffect(() => {
-    if (user || loading || !GOOGLE_OAUTH_CLIENT_ID) {
-      setGisReady(false);
-      return;
-    }
-
-    let cancelled = false;
-    let pollTimer: number | undefined;
-
-    // Dynamically ensure GIS script is loaded even if cached HTML lacked it
-    if (
-      !(window as any).google?.accounts?.id &&
-      !document.querySelector('script[src*="accounts.google.com/gsi/client"]')
-    ) {
-      const script = document.createElement('script');
-      script.src = 'https://accounts.google.com/gsi/client';
-      script.async = true;
-      script.defer = true;
-      document.head.appendChild(script);
-    }
-
-    const initGis = () => {
-      if (cancelled) return true;
-      const gsi = (window as any).google?.accounts?.id;
-      if (!gsi || !googleButtonRef.current) return false;
-
-      try {
-        gsi.initialize({
-          client_id: GOOGLE_OAUTH_CLIENT_ID,
-          use_fedcm_for_prompt: true,
-          itp_support: true,
-          callback: async (response: { credential?: string }) => {
-            if (!response?.credential) return;
-            setIsLoggingIn(true);
-            setLoginIssue(null);
-            try {
-              const credential = GoogleAuthProvider.credential(response.credential);
-              await signInWithCredential(auth, credential);
-            } catch (err: any) {
-              console.error('GIS Credential Sign-in Error:', err);
-              setLoginIssue({
-                type: 'other',
-                message: err?.message || 'Không thể hoàn tất xác thực với Firebase.',
-              });
-              toast.error('Lỗi xác thực Google: ' + (err?.message || 'Vui lòng thử lại.'));
-            } finally {
-              setIsLoggingIn(false);
-            }
-          },
-          error_callback: (err: any) => {
-            console.warn('GIS error:', err);
-          },
-        });
-
-        googleButtonRef.current.innerHTML = '';
-        const containerWidth = googleButtonRef.current.parentElement?.clientWidth || googleButtonRef.current.offsetWidth || 320;
-        gsi.renderButton(googleButtonRef.current, {
-          theme: darkMode ? 'filled_black' : 'filled_blue',
-          size: 'large',
-          type: 'standard',
-          shape: 'rectangular',
-          text: 'signin_with',
-          locale: 'vi',
-          width: Math.min(360, Math.max(260, containerWidth)),
-        });
-        setGisReady(true);
-
-        if (!isInIframe) {
-          try {
-            gsi.prompt();
-          } catch {
-            // Ignore One Tap cooldown
-          }
-        }
-        return true;
-      } catch (err) {
-        console.warn('GIS init error:', err);
-        return false;
-      }
-    };
-
-    if (!initGis()) {
-      let attempts = 0;
-      pollTimer = window.setInterval(() => {
-        attempts += 1;
-        if (initGis() || attempts >= 30) {
-          if (pollTimer) window.clearInterval(pollTimer);
-        }
-      }, 250);
-    }
-
-    return () => {
-      cancelled = true;
-      if (pollTimer) window.clearInterval(pollTimer);
-    };
-  }, [user, loading, darkMode, isInIframe]);
-
   const createGoogleProvider = () => {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
@@ -1012,20 +910,11 @@ export default function App() {
       const code = error?.code || '';
 
       if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
-        if (!isInIframe) {
-          try {
-            (window as any).google?.accounts?.id?.prompt?.();
-          } catch {
-            // Ignore
-          }
-        }
         setLoginIssue({
           type: 'popup-blocked',
-          message: gisReady
-            ? 'Trình duyệt đang chặn cửa sổ bật lên (Popup). Vui lòng dùng nút Đăng nhập Google chính thức ngay phía trên (không cần Popup, không phụ thuộc cookie bên thứ 3) hoặc bật Pop-ups.'
-            : 'Trình duyệt đang chặn cửa sổ bật lên (Popup) đăng nhập Google.',
+          message: 'Trình duyệt đang chặn cửa sổ bật lên (Popup) đăng nhập Google.',
         });
-        toast.error('Trình duyệt đã chặn cửa sổ Popup. Hãy dùng nút Google phía trên hoặc cho phép Pop-ups.', {
+        toast.error('Trình duyệt đã chặn cửa sổ bật lên (Popup). Vui lòng cho phép Pop-ups cho trang này rồi thử lại.', {
           duration: 6000,
         });
       } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
@@ -1264,46 +1153,21 @@ export default function App() {
               Cổng thông tin nội bộ quản lý kho vật tư tiêu hao, phim, hóa chất & dược chẩn đoán hình ảnh.
             </p>
 
-            {/* Primary Google Identity Services button: mounted visibly (never display:none) so GIS measures & renders reliably */}
-            {GOOGLE_OAUTH_CLIENT_ID && (
-              <div className={gisReady ? 'mb-3 w-full' : 'w-full'}>
-                <div
-                  ref={googleButtonRef}
-                  className="w-full flex justify-center"
-                />
-                {gisReady && (
-                  <div className="relative flex items-center justify-center my-3">
-                    <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
-                    <span className={`px-3 text-[11px] font-medium shrink-0 ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-white text-slate-400'}`}>
-                      hoặc dùng cửa sổ Google truyền thống
-                    </span>
-                    <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
-                  </div>
-                )}
-              </div>
-            )}
-
             <button 
               onClick={handleLogin}
               disabled={isLoggingIn}
-              style={!gisReady ? { backgroundColor: '#1a56db', color: '#ffffff' } : undefined}
-              className={`w-full py-3.5 px-6 font-semibold rounded-xl transition-all flex items-center justify-center gap-3 active:scale-95 cursor-pointer disabled:opacity-70 ${
-                gisReady
-                  ? (darkMode
-                      ? 'bg-slate-700 hover:bg-slate-600 text-white border border-slate-600'
-                      : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200')
-                  : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-100'
-              }`}
+              style={{ backgroundColor: '#1a56db', color: '#ffffff' }}
+              className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-100 active:scale-95 cursor-pointer"
             >
               {isLoggingIn ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin shrink-0" />
-                  <span>Đang xác thực tài khoản Google...</span>
+                  <span>Đang mở cửa sổ đăng nhập Google...</span>
                 </>
               ) : (
                 <>
                   <img src="https://www.google.com/favicon.ico" className="w-5 h-5 shrink-0" alt="Google" />
-                  <span>{gisReady ? 'Đăng nhập qua Popup Google' : 'Đăng nhập với Google'}</span>
+                  <span>Đăng nhập với Google</span>
                 </>
               )}
             </button>
@@ -1321,29 +1185,42 @@ export default function App() {
 
                 {(loginIssue.type === 'popup-blocked' || loginIssue.type === 'popup-closed' || loginIssue.type === 'redirect-failed') && (
                   <ol className={`list-decimal list-inside space-y-1.5 leading-relaxed ${darkMode ? 'text-amber-200/90' : 'text-amber-800'}`}>
-                    {gisReady && (
-                      <li>
-                        <strong>Khuyên dùng:</strong> Nhấn nút <strong>Đăng nhập bằng Google</strong> màu xanh/đen chính thức ở đầu thẻ (sử dụng chuẩn bảo mật mới, không cần Popup và không bị chặn cookie bên thứ 3).
-                      </li>
-                    )}
                     <li>
-                      Nếu dùng Popup: nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> trên thanh địa chỉ và chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong>, đồng thời tạm tắt <strong>Chặn quảng cáo / Chặn theo dõi</strong> trên Cốc Cốc / Edge.
+                      Nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> ở góc phải thanh địa chỉ (hoặc biểu tượng <strong>cài đặt bên trái thanh địa chỉ</strong>) → mục <strong>Cửa sổ bật lên và chuyển hướng (Pop-ups)</strong> chọn <strong>Cho phép (Allow)</strong>.
+                    </li>
+                    <li>
+                      Nếu dùng <strong>Cốc Cốc / trình chặn quảng cáo</strong>: tạm tắt khiên chặn cho trang này để cửa sổ Google không bị tự động đóng.
+                    </li>
+                    <li>
+                      Cách đăng nhập bằng <strong>Popup</strong> hoạt động độc lập, <strong>không bị chặn bởi cookie bên thứ 3</strong>. Sau khi bật Pop-ups, nhấn nút <strong>Đăng nhập lại</strong> bên dưới.
                     </li>
                   </ol>
                 )}
 
                 <div className="flex flex-col gap-2 pt-1">
-                  {isInIframe ? (
+                  {isInIframe && (
                     <a
                       href={typeof window !== 'undefined' ? window.location.href : '#'}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold flex items-center justify-center gap-2 transition-colors text-xs"
+                      className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center justify-center gap-2 transition-colors text-xs"
                     >
                       <ArrowUpRight className="w-4 h-4" />
-                      <span>Mở trong Tab mới để đăng nhập</span>
+                      <span>Mở ứng dụng trong Tab mới để đăng nhập</span>
                     </a>
-                  ) : (
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleLogin}
+                    disabled={isLoggingIn}
+                    className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold flex items-center justify-center gap-2 transition-colors text-xs cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Thử đăng nhập lại bằng Popup (Khuyên dùng)</span>
+                  </button>
+
+                  {!isInIframe && (
                     <button
                       type="button"
                       onClick={handleRedirectLogin}
@@ -1355,23 +1232,9 @@ export default function App() {
                       }`}
                     >
                       <ArrowUpRight className="w-3.5 h-3.5" />
-                      <span>Thử chuyển hướng (yêu cầu bật cookie bên thứ 3)</span>
+                      <span>Đăng nhập chuyển hướng (cần bật cookie bên thứ 3)</span>
                     </button>
                   )}
-
-                  <button
-                    type="button"
-                    onClick={handleLogin}
-                    disabled={isLoggingIn}
-                    className={`w-full py-2 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors text-xs cursor-pointer border ${
-                      darkMode
-                        ? 'bg-slate-800 border-amber-700/60 text-amber-200 hover:bg-slate-700'
-                        : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-100/60'
-                    }`}
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Thử đăng nhập lại bằng Popup</span>
-                  </button>
                 </div>
               </div>
             )}
