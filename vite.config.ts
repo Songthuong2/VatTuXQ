@@ -54,6 +54,9 @@ export default defineConfig(({mode}) => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
+          skipWaiting: true,
+          clientsClaim: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           globIgnores: ['**/assets/aistudio/**'],
           maximumFileSizeToCacheInBytes: 15 * 1024 * 1024,

@@ -877,7 +877,7 @@ export default function App() {
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
 
-  // Initialize Google Identity Services (FedCM) so sign-in works without popups or 3rd-party cookies
+  // Initialize Google Identity Services (FedCM One Tap + Official Button) so sign-in works without 3rd-party cookies
   useEffect(() => {
     if (user || loading || !GOOGLE_OAUTH_CLIENT_ID) {
       setGisReady(false);
@@ -886,6 +886,18 @@ export default function App() {
 
     let cancelled = false;
     let pollTimer: number | undefined;
+
+    // Dynamically ensure GIS script is loaded even if cached HTML lacked it
+    if (
+      !(window as any).google?.accounts?.id &&
+      !document.querySelector('script[src*="accounts.google.com/gsi/client"]')
+    ) {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
 
     const initGis = () => {
       if (cancelled) return true;
@@ -896,7 +908,6 @@ export default function App() {
         gsi.initialize({
           client_id: GOOGLE_OAUTH_CLIENT_ID,
           use_fedcm_for_prompt: true,
-          use_fedcm_for_button: true,
           itp_support: true,
           callback: async (response: { credential?: string }) => {
             if (!response?.credential) return;
@@ -922,7 +933,7 @@ export default function App() {
         });
 
         googleButtonRef.current.innerHTML = '';
-        const containerWidth = googleButtonRef.current.offsetWidth || 320;
+        const containerWidth = googleButtonRef.current.parentElement?.clientWidth || googleButtonRef.current.offsetWidth || 320;
         gsi.renderButton(googleButtonRef.current, {
           theme: darkMode ? 'filled_black' : 'filled_blue',
           size: 'large',
@@ -930,7 +941,7 @@ export default function App() {
           shape: 'rectangular',
           text: 'signin_with',
           locale: 'vi',
-          width: Math.min(380, Math.max(240, containerWidth)),
+          width: Math.min(360, Math.max(260, containerWidth)),
         });
         setGisReady(true);
 
@@ -952,7 +963,7 @@ export default function App() {
       let attempts = 0;
       pollTimer = window.setInterval(() => {
         attempts += 1;
-        if (initGis() || attempts >= 25) {
+        if (initGis() || attempts >= 30) {
           if (pollTimer) window.clearInterval(pollTimer);
         }
       }, 250);
@@ -1253,20 +1264,22 @@ export default function App() {
               Cổng thông tin nội bộ quản lý kho vật tư tiêu hao, phim, hóa chất & dược chẩn đoán hình ảnh.
             </p>
 
-            {/* Primary Google Identity Services (FedCM) button: works without popups or 3rd-party cookies */}
+            {/* Primary Google Identity Services button: mounted visibly (never display:none) so GIS measures & renders reliably */}
             {GOOGLE_OAUTH_CLIENT_ID && (
-              <div className={gisReady ? 'mb-3' : 'hidden'}>
+              <div className={gisReady ? 'mb-3 w-full' : 'w-full'}>
                 <div
                   ref={googleButtonRef}
-                  className="w-full flex justify-center min-h-[44px]"
+                  className="w-full flex justify-center"
                 />
-                <div className="relative flex items-center justify-center my-3">
-                  <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
-                  <span className={`px-3 text-[11px] font-medium shrink-0 ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-white text-slate-400'}`}>
-                    hoặc dùng cửa sổ Google truyền thống
-                  </span>
-                  <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
-                </div>
+                {gisReady && (
+                  <div className="relative flex items-center justify-center my-3">
+                    <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
+                    <span className={`px-3 text-[11px] font-medium shrink-0 ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-white text-slate-400'}`}>
+                      hoặc dùng cửa sổ Google truyền thống
+                    </span>
+                    <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
+                  </div>
+                )}
               </div>
             )}
 
