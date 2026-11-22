@@ -68,12 +68,14 @@ import {
 } from './googleSheetsService';
 import { 
   auth, 
-  db 
+  db,
+  GOOGLE_OAUTH_CLIENT_ID 
 } from './firebase';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
   signInWithRedirect,
+  signInWithCredential,
   getRedirectResult,
   GoogleAuthProvider, 
   signOut,
@@ -633,6 +635,9 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [gisReady, setGisReady] = useState(false);
+  const googleButtonRef = useRef<HTMLDivElement>(null);
+  const redirectCheckedRef = useRef(false);
   const [loginIssue, setLoginIssue] = useState<{
     type: 'popup-blocked' | 'redirect-failed' | 'unauthorized-domain' | 'popup-closed' | 'other';
     message: string;
@@ -768,49 +773,51 @@ export default function App() {
   // --- Auth ---
   useEffect(() => {
     let active = true;
-    const redirectAttempted = sessionStorage.getItem('cdha_auth_redirect_pending') === '1';
 
-    getRedirectResult(auth)
-      .then((result) => {
-        if (!active) return;
-        if (result?.user) {
+    if (!redirectCheckedRef.current) {
+      redirectCheckedRef.current = true;
+      const redirectAttempted = sessionStorage.getItem('cdha_auth_redirect_pending') === '1';
+
+      getRedirectResult(auth)
+        .then((result) => {
+          if (!active) return;
+          if (result?.user) {
+            sessionStorage.removeItem('cdha_auth_redirect_pending');
+            setLoginIssue(null);
+          } else if (redirectAttempted) {
+            sessionStorage.removeItem('cdha_auth_redirect_pending');
+            if (!auth.currentUser) {
+              setLoginIssue({
+                type: 'redirect-failed',
+                message:
+                  'Trình duyệt đã chặn lưu phiên đăng nhập chuyển hướng (cookie bên thứ 3). Hãy dùng nút Đăng nhập Google trực tiếp ở trên (không dùng cookie bên thứ 3) hoặc cho phép cửa sổ bật lên (Pop-ups).',
+              });
+            }
+          }
+        })
+        .catch((err: any) => {
+          if (!active) return;
           sessionStorage.removeItem('cdha_auth_redirect_pending');
-          sessionStorage.removeItem('cdha_auth_redirect_failed_once');
-          setLoginIssue(null);
-        } else if (redirectAttempted) {
-          sessionStorage.removeItem('cdha_auth_redirect_pending');
-          if (!auth.currentUser) {
+          console.error('Redirect Login Error:', err);
+          if (err?.code === 'auth/unauthorized-domain') {
+            setLoginIssue({
+              type: 'unauthorized-domain',
+              message: `Tên miền ${window.location.hostname} chưa được cấp phép trong Firebase Auth Authorized Domains.`,
+            });
+          } else {
             setLoginIssue({
               type: 'redirect-failed',
-              message:
-                'Trình duyệt đã chặn lưu phiên đăng nhập chuyển hướng (cookie bên thứ 3). Vui lòng cho phép cửa sổ bật lên (Pop-ups) cho trang này hoặc mở trực tiếp trên trình duyệt rồi thử lại.',
+              message: 'Không thể hoàn tất đăng nhập chuyển hướng. Vui lòng dùng nút Đăng nhập Google trực tiếp ở trên hoặc bật Pop-ups.',
             });
           }
-        }
-      })
-      .catch((err: any) => {
-        if (!active) return;
-        sessionStorage.removeItem('cdha_auth_redirect_pending');
-        console.error('Redirect Login Error:', err);
-        if (err?.code === 'auth/unauthorized-domain') {
-          setLoginIssue({
-            type: 'unauthorized-domain',
-            message: `Tên miền ${window.location.hostname} chưa được cấp phép trong Firebase Auth Authorized Domains.`,
-          });
-        } else {
-          setLoginIssue({
-            type: 'redirect-failed',
-            message: 'Không thể hoàn tất đăng nhập chuyển hướng. Vui lòng cho phép cửa sổ bật lên (Pop-ups) và thử lại.',
-          });
-        }
-      });
+        });
+    }
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       if (!active) return;
       setUser(u);
       if (u) {
         sessionStorage.removeItem('cdha_auth_redirect_pending');
-        sessionStorage.removeItem('cdha_auth_redirect_failed_once');
         setLoginIssue(null);
         setIsLoggingIn(false);
       } else {
@@ -870,6 +877,93 @@ export default function App() {
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
 
+  // Initialize Google Identity Services (FedCM) so sign-in works without popups or 3rd-party cookies
+  useEffect(() => {
+    if (user || loading || !GOOGLE_OAUTH_CLIENT_ID) {
+      setGisReady(false);
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: number | undefined;
+
+    const initGis = () => {
+      if (cancelled) return true;
+      const gsi = (window as any).google?.accounts?.id;
+      if (!gsi || !googleButtonRef.current) return false;
+
+      try {
+        gsi.initialize({
+          client_id: GOOGLE_OAUTH_CLIENT_ID,
+          use_fedcm_for_prompt: true,
+          use_fedcm_for_button: true,
+          itp_support: true,
+          callback: async (response: { credential?: string }) => {
+            if (!response?.credential) return;
+            setIsLoggingIn(true);
+            setLoginIssue(null);
+            try {
+              const credential = GoogleAuthProvider.credential(response.credential);
+              await signInWithCredential(auth, credential);
+            } catch (err: any) {
+              console.error('GIS Credential Sign-in Error:', err);
+              setLoginIssue({
+                type: 'other',
+                message: err?.message || 'Không thể hoàn tất xác thực với Firebase.',
+              });
+              toast.error('Lỗi xác thực Google: ' + (err?.message || 'Vui lòng thử lại.'));
+            } finally {
+              setIsLoggingIn(false);
+            }
+          },
+          error_callback: (err: any) => {
+            console.warn('GIS error:', err);
+          },
+        });
+
+        googleButtonRef.current.innerHTML = '';
+        const containerWidth = googleButtonRef.current.offsetWidth || 320;
+        gsi.renderButton(googleButtonRef.current, {
+          theme: darkMode ? 'filled_black' : 'filled_blue',
+          size: 'large',
+          type: 'standard',
+          shape: 'rectangular',
+          text: 'signin_with',
+          locale: 'vi',
+          width: Math.min(380, Math.max(240, containerWidth)),
+        });
+        setGisReady(true);
+
+        if (!isInIframe) {
+          try {
+            gsi.prompt();
+          } catch {
+            // Ignore One Tap cooldown
+          }
+        }
+        return true;
+      } catch (err) {
+        console.warn('GIS init error:', err);
+        return false;
+      }
+    };
+
+    if (!initGis()) {
+      let attempts = 0;
+      pollTimer = window.setInterval(() => {
+        attempts += 1;
+        if (initGis() || attempts >= 25) {
+          if (pollTimer) window.clearInterval(pollTimer);
+        }
+      }, 250);
+    }
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) window.clearInterval(pollTimer);
+    };
+  }, [user, loading, darkMode, isInIframe]);
+
   const createGoogleProvider = () => {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
@@ -907,24 +1001,20 @@ export default function App() {
       const code = error?.code || '';
 
       if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
-        const alreadyTriedRedirect = sessionStorage.getItem('cdha_auth_redirect_failed_once') === '1';
-        if (!isInIframe && !alreadyTriedRedirect) {
-          sessionStorage.setItem('cdha_auth_redirect_pending', '1');
-          sessionStorage.setItem('cdha_auth_redirect_failed_once', '1');
-          toast.info('Trình duyệt chặn cửa sổ bật lên, đang tự động chuyển hướng sang Google...', { duration: 3500 });
+        if (!isInIframe) {
           try {
-            await signInWithRedirect(auth, provider);
-            return;
-          } catch (redirectErr) {
-            console.error('Fallback redirect error:', redirectErr);
-            sessionStorage.removeItem('cdha_auth_redirect_pending');
+            (window as any).google?.accounts?.id?.prompt?.();
+          } catch {
+            // Ignore
           }
         }
         setLoginIssue({
           type: 'popup-blocked',
-          message: 'Trình duyệt đang chặn cửa sổ bật lên (Popup) đăng nhập Google.',
+          message: gisReady
+            ? 'Trình duyệt đang chặn cửa sổ bật lên (Popup). Vui lòng dùng nút Đăng nhập Google chính thức ngay phía trên (không cần Popup, không phụ thuộc cookie bên thứ 3) hoặc bật Pop-ups.'
+            : 'Trình duyệt đang chặn cửa sổ bật lên (Popup) đăng nhập Google.',
         });
-        toast.error('Trình duyệt đã chặn cửa sổ đăng nhập. Vui lòng xem hướng dẫn hoặc chọn cách đăng nhập thay thế bên dưới.', {
+        toast.error('Trình duyệt đã chặn cửa sổ Popup. Hãy dùng nút Google phía trên hoặc cho phép Pop-ups.', {
           duration: 6000,
         });
       } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
@@ -1163,21 +1253,44 @@ export default function App() {
               Cổng thông tin nội bộ quản lý kho vật tư tiêu hao, phim, hóa chất & dược chẩn đoán hình ảnh.
             </p>
 
+            {/* Primary Google Identity Services (FedCM) button: works without popups or 3rd-party cookies */}
+            {GOOGLE_OAUTH_CLIENT_ID && (
+              <div className={gisReady ? 'mb-3' : 'hidden'}>
+                <div
+                  ref={googleButtonRef}
+                  className="w-full flex justify-center min-h-[44px]"
+                />
+                <div className="relative flex items-center justify-center my-3">
+                  <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
+                  <span className={`px-3 text-[11px] font-medium shrink-0 ${darkMode ? 'bg-slate-800 text-slate-400' : 'bg-white text-slate-400'}`}>
+                    hoặc dùng cửa sổ Google truyền thống
+                  </span>
+                  <div className={`border-t w-full ${darkMode ? 'border-slate-700' : 'border-slate-200'}`} />
+                </div>
+              </div>
+            )}
+
             <button 
               onClick={handleLogin}
               disabled={isLoggingIn}
-              style={{ backgroundColor: '#1a56db', color: '#ffffff' }}
-              className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-100 active:scale-95 cursor-pointer"
+              style={!gisReady ? { backgroundColor: '#1a56db', color: '#ffffff' } : undefined}
+              className={`w-full py-3.5 px-6 font-semibold rounded-xl transition-all flex items-center justify-center gap-3 active:scale-95 cursor-pointer disabled:opacity-70 ${
+                gisReady
+                  ? (darkMode
+                      ? 'bg-slate-700 hover:bg-slate-600 text-white border border-slate-600'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200')
+                  : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-100'
+              }`}
             >
               {isLoggingIn ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin shrink-0" />
-                  <span>Đang mở đăng nhập Google...</span>
+                  <span>Đang xác thực tài khoản Google...</span>
                 </>
               ) : (
                 <>
                   <img src="https://www.google.com/favicon.ico" className="w-5 h-5 shrink-0" alt="Google" />
-                  <span>Đăng nhập với Google</span>
+                  <span>{gisReady ? 'Đăng nhập qua Popup Google' : 'Đăng nhập với Google'}</span>
                 </>
               )}
             </button>
@@ -1195,14 +1308,13 @@ export default function App() {
 
                 {(loginIssue.type === 'popup-blocked' || loginIssue.type === 'popup-closed' || loginIssue.type === 'redirect-failed') && (
                   <ol className={`list-decimal list-inside space-y-1.5 leading-relaxed ${darkMode ? 'text-amber-200/90' : 'text-amber-800'}`}>
+                    {gisReady && (
+                      <li>
+                        <strong>Khuyên dùng:</strong> Nhấn nút <strong>Đăng nhập bằng Google</strong> màu xanh/đen chính thức ở đầu thẻ (sử dụng chuẩn bảo mật mới, không cần Popup và không bị chặn cookie bên thứ 3).
+                      </li>
+                    )}
                     <li>
-                      Nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> ở góc phải thanh địa chỉ và chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong>.
-                    </li>
-                    <li>
-                      Nếu dùng <strong>Cốc Cốc / Chrome / Edge</strong>: tạm tắt <strong>Chặn quảng cáo / Chặn theo dõi</strong> cho trang này để cửa sổ Google không bị tự động đóng.
-                    </li>
-                    <li>
-                      Hoặc chọn phương thức đăng nhập thay thế trực tiếp bên dưới:
+                      Nếu dùng Popup: nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> trên thanh địa chỉ và chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong>, đồng thời tạm tắt <strong>Chặn quảng cáo / Chặn theo dõi</strong> trên Cốc Cốc / Edge.
                     </li>
                   </ol>
                 )}
@@ -1223,10 +1335,14 @@ export default function App() {
                       type="button"
                       onClick={handleRedirectLogin}
                       disabled={isLoggingIn}
-                      className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold flex items-center justify-center gap-2 transition-colors text-xs cursor-pointer"
+                      className={`w-full py-2 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors text-xs cursor-pointer border ${
+                        darkMode
+                          ? 'bg-slate-800 border-amber-700/60 text-amber-200 hover:bg-slate-700'
+                          : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-100/60'
+                      }`}
                     >
-                      <ArrowUpRight className="w-4 h-4" />
-                      <span>Đăng nhập không cần Popup (Chuyển hướng)</span>
+                      <ArrowUpRight className="w-3.5 h-3.5" />
+                      <span>Thử chuyển hướng (yêu cầu bật cookie bên thứ 3)</span>
                     </button>
                   )}
 
