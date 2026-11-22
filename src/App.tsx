@@ -56,8 +56,7 @@ import {
   Percent,
   Printer,
   ScanLine,
-  QrCode,
-  ExternalLink
+  QrCode
 } from 'lucide-react';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
 import { PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
@@ -74,6 +73,7 @@ import {
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
+  signInWithRedirect,
   getRedirectResult,
   GoogleAuthProvider, 
   signOut,
@@ -633,13 +633,10 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [loginErrorType, setLoginErrorType] = useState<null | 'popup-blocked' | 'unauthorized-domain' | 'generic'>(null);
-  const [loginErrorMessage, setLoginErrorMessage] = useState<string>('');
-  const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
-  const isStandalonePWA = typeof window !== 'undefined' && (
-    window.matchMedia?.('(display-mode: standalone)')?.matches ||
-    (window.navigator as any)?.standalone === true
-  );
+  const [loginIssue, setLoginIssue] = useState<{
+    type: 'popup-blocked' | 'redirect-failed' | 'unauthorized-domain' | 'popup-closed' | 'other';
+    message: string;
+  } | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<'medical' | 'light' | 'dark'>(() => {
@@ -770,29 +767,51 @@ export default function App() {
 
   // --- Auth ---
   useEffect(() => {
-    let mounted = true;
+    let active = true;
+    const redirectAttempted = sessionStorage.getItem('cdha_auth_redirect_pending') === '1';
 
-    sessionStorage.removeItem('g_auth_redirect_pending');
     getRedirectResult(auth)
       .then((result) => {
-        if (!mounted) return;
+        if (!active) return;
         if (result?.user) {
-          setUser(result.user);
-          setLoginErrorType(null);
-          setLoginErrorMessage('');
+          sessionStorage.removeItem('cdha_auth_redirect_pending');
+          sessionStorage.removeItem('cdha_auth_redirect_failed_once');
+          setLoginIssue(null);
+        } else if (redirectAttempted) {
+          sessionStorage.removeItem('cdha_auth_redirect_pending');
+          if (!auth.currentUser) {
+            setLoginIssue({
+              type: 'redirect-failed',
+              message:
+                'Trình duyệt đã chặn lưu phiên đăng nhập chuyển hướng (cookie bên thứ 3). Vui lòng cho phép cửa sổ bật lên (Pop-ups) cho trang này hoặc mở trực tiếp trên trình duyệt rồi thử lại.',
+            });
+          }
         }
       })
-      .catch(() => {
-        // Ignore stale redirect state; primary sign-in uses signInWithPopup
+      .catch((err: any) => {
+        if (!active) return;
+        sessionStorage.removeItem('cdha_auth_redirect_pending');
+        console.error('Redirect Login Error:', err);
+        if (err?.code === 'auth/unauthorized-domain') {
+          setLoginIssue({
+            type: 'unauthorized-domain',
+            message: `Tên miền ${window.location.hostname} chưa được cấp phép trong Firebase Auth Authorized Domains.`,
+          });
+        } else {
+          setLoginIssue({
+            type: 'redirect-failed',
+            message: 'Không thể hoàn tất đăng nhập chuyển hướng. Vui lòng cho phép cửa sổ bật lên (Pop-ups) và thử lại.',
+          });
+        }
       });
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!mounted) return;
+      if (!active) return;
       setUser(u);
       if (u) {
-        sessionStorage.removeItem('g_auth_redirect_pending');
-        setLoginErrorType(null);
-        setLoginErrorMessage('');
+        sessionStorage.removeItem('cdha_auth_redirect_pending');
+        sessionStorage.removeItem('cdha_auth_redirect_failed_once');
+        setLoginIssue(null);
         setIsLoggingIn(false);
       } else {
         setUsersLoaded(false);
@@ -801,7 +820,7 @@ export default function App() {
       setLoading(false);
     });
     return () => {
-      mounted = false;
+      active = false;
       unsubscribe();
     };
   }, []);
@@ -849,51 +868,92 @@ export default function App() {
     }
   };
 
+  const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+
+  const createGoogleProvider = () => {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    return provider;
+  };
+
+  const handleRedirectLogin = async () => {
+    if (isLoggingIn) return;
+    if (isInIframe) {
+      toast.info('Đang chạy trong khung nhúng, vui lòng dùng nút "Mở trong Tab mới" để đăng nhập.', { duration: 5000 });
+      return;
+    }
+    setIsLoggingIn(true);
+    setLoginIssue(null);
+    try {
+      sessionStorage.setItem('cdha_auth_redirect_pending', '1');
+      await signInWithRedirect(auth, createGoogleProvider());
+    } catch (error: any) {
+      sessionStorage.removeItem('cdha_auth_redirect_pending');
+      console.error('Redirect Login Error:', error);
+      toast.error('Không thể chuyển hướng đăng nhập: ' + (error?.message || 'Đã có lỗi xảy ra.'));
+      setIsLoggingIn(false);
+    }
+  };
+
   const handleLogin = async () => {
     if (isLoggingIn) return;
     setIsLoggingIn(true);
-    setLoginErrorType(null);
-    setLoginErrorMessage('');
-
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
-
+    setLoginIssue(null);
+    const provider = createGoogleProvider();
     try {
-      const cred = await signInWithPopup(auth, provider);
-      if (cred?.user) {
-        setUser(cred.user);
-      }
-      setIsLoggingIn(false);
+      await signInWithPopup(auth, provider);
     } catch (error: any) {
-      console.error("Login Error:", error);
+      console.error('Login Error:', error);
       const code = error?.code || '';
-      setIsLoggingIn(false);
 
       if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
-        setLoginErrorType('popup-blocked');
-        setLoginErrorMessage(
-          isInIframe
-            ? 'Trình duyệt đang chặn cửa sổ bật lên (popup) hoặc cookie bên thứ ba trong khung xem trước.'
-            : 'Trình duyệt đã chặn cửa sổ bật lên (popup) đăng nhập Google.'
-        );
-        toast.error("Trình duyệt đã chặn cửa sổ đăng nhập. Vui lòng xem hướng dẫn bên dưới nút đăng nhập.", {
+        const alreadyTriedRedirect = sessionStorage.getItem('cdha_auth_redirect_failed_once') === '1';
+        if (!isInIframe && !alreadyTriedRedirect) {
+          sessionStorage.setItem('cdha_auth_redirect_pending', '1');
+          sessionStorage.setItem('cdha_auth_redirect_failed_once', '1');
+          toast.info('Trình duyệt chặn cửa sổ bật lên, đang tự động chuyển hướng sang Google...', { duration: 3500 });
+          try {
+            await signInWithRedirect(auth, provider);
+            return;
+          } catch (redirectErr) {
+            console.error('Fallback redirect error:', redirectErr);
+            sessionStorage.removeItem('cdha_auth_redirect_pending');
+          }
+        }
+        setLoginIssue({
+          type: 'popup-blocked',
+          message: 'Trình duyệt đang chặn cửa sổ bật lên (Popup) đăng nhập Google.',
+        });
+        toast.error('Trình duyệt đã chặn cửa sổ đăng nhập. Vui lòng xem hướng dẫn hoặc chọn cách đăng nhập thay thế bên dưới.', {
           duration: 6000,
         });
       } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setLoginErrorType('popup-blocked');
-        setLoginErrorMessage(
-          'Cửa sổ đăng nhập đã đóng trước khi hoàn tất xác thực. Nếu bạn vừa xác nhận tài khoản Google nhưng bị quay lại đây, hãy cho phép Popup & Cookie bên thứ ba hoặc mở ứng dụng ở tab trình duyệt mới.'
-        );
-        toast.info("Cửa sổ đăng nhập đã đóng. Vui lòng thử lại hoặc mở ở tab mới.");
+        setLoginIssue({
+          type: 'popup-closed',
+          message: 'Cửa sổ đăng nhập Google đã bị đóng trước khi hoàn tất (hoặc bị trình chặn quảng cáo tự động đóng).',
+        });
+        toast.warning('Cửa sổ đăng nhập đã bị đóng trước khi hoàn tất.');
       } else if (code === 'auth/unauthorized-domain') {
-        setLoginErrorType('unauthorized-domain');
-        setLoginErrorMessage(`Tên miền "${window.location.hostname}" chưa được thêm vào Authorized domains trong Firebase Console.`);
-        toast.error(`Tên miền ${window.location.hostname} chưa được cấp quyền đăng nhập.`);
+        setLoginIssue({
+          type: 'unauthorized-domain',
+          message: `Tên miền ${window.location.hostname} chưa được cấp phép trong Firebase Auth.`,
+        });
+        toast.error(`Tên miền ${window.location.hostname} chưa được thêm vào Authorized Domains.`);
+      } else if (code === 'auth/network-request-failed') {
+        setLoginIssue({
+          type: 'other',
+          message: 'Lỗi kết nối mạng khi liên hệ máy chủ Google. Vui lòng kiểm tra Internet và thử lại.',
+        });
+        toast.error('Không thể kết nối máy chủ đăng nhập. Vui lòng kiểm tra mạng.');
       } else {
-        setLoginErrorType('generic');
-        setLoginErrorMessage(error?.message || "Đã có lỗi xảy ra khi đăng nhập.");
-        toast.error("Lỗi đăng nhập: " + (error?.message || "Đã có lỗi xảy ra."));
+        setLoginIssue({
+          type: 'other',
+          message: error?.message || 'Đã có lỗi xảy ra trong quá trình đăng nhập.',
+        });
+        toast.error('Lỗi đăng nhập: ' + (error?.message || 'Đã có lỗi xảy ra.'));
       }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -1055,13 +1115,13 @@ export default function App() {
   if (!user) {
     return (
       <ErrorBoundary>
-        <div className={`min-h-screen w-full flex flex-col items-center justify-center p-4 py-16 overflow-y-auto relative ${
+        <div className={`min-h-screen w-full overflow-y-auto flex flex-col items-center p-4 sm:p-6 relative ${
           darkMode ? 'bg-slate-900' : isMedical ? 'bg-[#f0f6fc]' : 'bg-slate-50'
         }`}>
-          <Toaster position="top-right" richColors />
+          <Toaster position="top-center" richColors />
 
           {/* Quick PWA install & theme selector on login screen */}
-          <div className="absolute top-4 right-4 flex items-center gap-2">
+          <div className="w-full max-w-5xl flex items-center justify-end gap-2 mb-4 shrink-0">
             <PWAInstallButton variant="header" darkMode={darkMode} isMedical={false} />
             <button 
               onClick={() => {
@@ -1080,7 +1140,7 @@ export default function App() {
           </div>
           <OfflineIndicator />
 
-          <div className={`max-w-md w-full rounded-3xl shadow-xl p-8 text-center border transition-all ${
+          <div className={`my-auto max-w-md w-full rounded-3xl shadow-xl p-6 sm:p-8 text-center border transition-all ${
             darkMode ? 'bg-slate-800 border-slate-700' : 
             isMedical ? 'bg-white border-blue-100 shadow-[0_12px_40px_rgba(26,86,219,0.08)]' : 
             'bg-white border-slate-100 shadow-lg'
@@ -1099,7 +1159,7 @@ export default function App() {
             <h1 className={`text-2xl font-bold mb-2 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
               Quản Lý Vật Tư Y Tế
             </h1>
-            <p className={`text-sm mb-7 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            <p className={`text-sm mb-6 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
               Cổng thông tin nội bộ quản lý kho vật tư tiêu hao, phim, hóa chất & dược chẩn đoán hình ảnh.
             </p>
 
@@ -1107,68 +1167,83 @@ export default function App() {
               onClick={handleLogin}
               disabled={isLoggingIn}
               style={{ backgroundColor: '#1a56db', color: '#ffffff' }}
-              className="w-full py-4 px-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-70 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-100 active:scale-95 cursor-pointer"
+              className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-70 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-100 active:scale-95 cursor-pointer"
             >
               {isLoggingIn ? (
-                <Loader2 className="w-5 h-5 animate-spin shrink-0" />
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin shrink-0" />
+                  <span>Đang mở đăng nhập Google...</span>
+                </>
               ) : (
-                <img src="https://www.google.com/favicon.ico" className="w-5 h-5 shrink-0" alt="Google" />
+                <>
+                  <img src="https://www.google.com/favicon.ico" className="w-5 h-5 shrink-0" alt="Google" />
+                  <span>Đăng nhập với Google</span>
+                </>
               )}
-              <span>{isLoggingIn ? 'Đang mở cửa sổ đăng nhập...' : 'Đăng nhập với Google'}</span>
             </button>
 
-            {loginErrorType === 'popup-blocked' && (
-              <div className={`mt-4 p-4 rounded-2xl border text-left text-xs space-y-3 ${
+            {loginIssue && (
+              <div className={`mt-5 p-4 rounded-2xl border text-left text-xs space-y-3 ${
                 darkMode
-                  ? 'bg-amber-950/40 border-amber-800/70 text-amber-200'
+                  ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
                   : 'bg-amber-50 border-amber-200 text-amber-900'
               }`}>
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-bold text-sm mb-1">Trình duyệt đang chặn cửa sổ bật lên (Popup)</p>
-                    <p className="opacity-90 leading-relaxed">{loginErrorMessage}</p>
-                  </div>
+                <div className="flex items-start gap-2 font-bold text-sm">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
+                  <span>{loginIssue.message}</span>
                 </div>
 
-                <ol className="list-decimal list-inside space-y-1.5 opacity-95 pl-1 leading-relaxed">
-                  <li>Nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> ở góc phải thanh địa chỉ và chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong>.</li>
-                  <li>Nếu đang dùng trình duyệt <strong>Cốc Cốc / Chrome / Edge</strong>: hãy tạm tắt <strong>Chặn quảng cáo / Chặn theo dõi</strong> cho trang này để cửa sổ Google không bị chặn sau khi xác nhận.</li>
-                  <li>Sau đó nhấn nút <strong>Đăng nhập với Google</strong> (hoặc <strong>Thử đăng nhập lại</strong>) bên dưới.</li>
-                </ol>
+                {(loginIssue.type === 'popup-blocked' || loginIssue.type === 'popup-closed' || loginIssue.type === 'redirect-failed') && (
+                  <ol className={`list-decimal list-inside space-y-1.5 leading-relaxed ${darkMode ? 'text-amber-200/90' : 'text-amber-800'}`}>
+                    <li>
+                      Nhấn biểu tượng <strong>cửa sổ bị chặn (dấu × đỏ)</strong> ở góc phải thanh địa chỉ và chọn <strong>Luôn cho phép cửa sổ bật lên (Pop-ups)</strong>.
+                    </li>
+                    <li>
+                      Nếu dùng <strong>Cốc Cốc / Chrome / Edge</strong>: tạm tắt <strong>Chặn quảng cáo / Chặn theo dõi</strong> cho trang này để cửa sổ Google không bị tự động đóng.
+                    </li>
+                    <li>
+                      Hoặc chọn phương thức đăng nhập thay thế trực tiếp bên dưới:
+                    </li>
+                  </ol>
+                )}
 
-                {(isInIframe || isStandalonePWA) ? (
-                  <a
-                    href={typeof window !== 'undefined' ? window.location.href : '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold flex items-center justify-center gap-2 transition-colors"
-                  >
-                    <ExternalLink className="w-4 h-4 shrink-0" />
-                    <span>{isStandalonePWA ? 'Mở bằng trình duyệt web để đăng nhập' : 'Mở ứng dụng ở tab mới để đăng nhập'}</span>
-                  </a>
-                ) : (
+                <div className="flex flex-col gap-2 pt-1">
+                  {isInIframe ? (
+                    <a
+                      href={typeof window !== 'undefined' ? window.location.href : '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold flex items-center justify-center gap-2 transition-colors text-xs"
+                    >
+                      <ArrowUpRight className="w-4 h-4" />
+                      <span>Mở trong Tab mới để đăng nhập</span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleRedirectLogin}
+                      disabled={isLoggingIn}
+                      className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold flex items-center justify-center gap-2 transition-colors text-xs cursor-pointer"
+                    >
+                      <ArrowUpRight className="w-4 h-4" />
+                      <span>Đăng nhập không cần Popup (Chuyển hướng)</span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={handleLogin}
                     disabled={isLoggingIn}
-                    className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    className={`w-full py-2 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition-colors text-xs cursor-pointer border ${
+                      darkMode
+                        ? 'bg-slate-800 border-amber-700/60 text-amber-200 hover:bg-slate-700'
+                        : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-100/60'
+                    }`}
                   >
-                    <RefreshCw className="w-4 h-4 shrink-0" />
-                    <span>Thử đăng nhập lại</span>
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Thử đăng nhập lại bằng Popup</span>
                   </button>
-                )}
-              </div>
-            )}
-
-            {(loginErrorType === 'unauthorized-domain' || loginErrorType === 'generic') && loginErrorMessage && (
-              <div className={`mt-4 p-3.5 rounded-2xl border text-left text-xs flex items-start gap-2 ${
-                darkMode
-                  ? 'bg-red-950/40 border-red-800/70 text-red-200'
-                  : 'bg-red-50 border-red-200 text-red-800'
-              }`}>
-                <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-                <span className="leading-relaxed">{loginErrorMessage}</span>
+                </div>
               </div>
             )}
 

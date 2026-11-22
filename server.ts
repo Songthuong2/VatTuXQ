@@ -24,6 +24,12 @@ async function startServer() {
 
   app.use(express.json({ limit: '10mb' }));
 
+  // Allow Firebase Google Auth popups to communicate back via window.opener
+  app.use((_req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    next();
+  });
+
   // Prevent 404 favicon.ico in logs
   app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
